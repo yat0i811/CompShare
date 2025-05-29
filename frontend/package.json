@@ -1,0 +1,23 @@
+{
+  "name": "video-frontend",
+  "version": "1.0.0",
+  "dependencies": {
+    "next": "14.0.0",
+    "react": "18.2.0",
+    "react-dom": "18.2.0",
+    "uuid": "^9.0.0",
+    "@babel/runtime-corejs3": "^7.23.2",
+    "styled-jsx": "^5.1.2",
+    "@babel/runtime": "^7.23.0",
+    "styled-components": "^6.1.1"
+  },
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
+  },
+  "devDependencies": {
+    "@babel/plugin-transform-runtime": "^7.23.0",
+    "babel-plugin-styled-components": "^2.1.4"
+  }
+}

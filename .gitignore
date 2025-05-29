@@ -1,0 +1,9 @@
+# --- ENV file ---
+backend/.env
+
+# --- DB ---
+backend/db_data/
+
+# --- Node modules ---
+frontend/node_modules/
+

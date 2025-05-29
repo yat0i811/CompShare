@@ -1,0 +1,14 @@
+fastapi
+uvicorn
+websockets
+python-jose[cryptography]
+python-multipart
+aiofiles
+python-dotenv
+python-magic
+boto3
+botocore
+aiosqlite
+passlib[bcrypt]
+bcrypt==4.0.1
+pydantic-settings
