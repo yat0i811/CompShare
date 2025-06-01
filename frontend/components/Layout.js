@@ -27,13 +27,13 @@ const Layout = ({ children }) => {
                     <ul>
                         <li>
                             <Link href="/">
-                                ホーム
+                                <button>ホーム</button>
                             </Link>
                         </li>
                         {isAdmin && (
                             <li>
                                 <Link href="/admin">
-                                    管理者ページ
+                                    <button>管理者ページ</button>
                                 </Link>
                             </li>
                         )}
@@ -105,6 +105,19 @@ const Layout = ({ children }) => {
                 .sidebar nav li {
                     padding: 10px;
                     border-bottom: 1px solid #eee;
+                }
+                .sidebar nav li button {
+                    width: 100%;
+                    text-align: left;
+                    background: none;
+                    border: none;
+                    cursor: pointer;
+                    font-size: 1em;
+                    color: #333;
+                    padding: 0;
+                }
+                .sidebar nav li button:hover {
+                    color: #0070f3;
                 }
                 .sidebar nav li.logout-button-container {
                     margin-top: auto;
