@@ -5,7 +5,7 @@ import time
 from core.config import settings
 
 # 1GB
-MAX_SIZE_EXTERNAL = 1000 * 1024 * 1024
+MAX_SIZE_EXTERNAL = 1024 * 1024 * 1024
 # 60秒
 RATE_LIMIT_SECONDS = 60
 
@@ -31,10 +31,10 @@ class ConditionalUploadLimitMiddleware(BaseHTTPMiddleware):
 class RateLimitMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: StarletteRequest, call_next):
         # Rate limit only for specific paths
-        # Determine target paths (e.g., /upload, /compress only)
+        # Determine target paths (e.g., /upload, /compress and /register only)
         # Consider reading from settings or hardcoding
-        # Here we target /upload/ and /compress/async/ (to match original logic in main.py)
-        if request.url.path not in ["/upload/", "/compress/async/"]:
+        # Here we target /upload/, /compress/async/ and /auth/register
+        if request.url.path not in ["/upload/", "/compress/async/", "/auth/register"]:
             return await call_next(request)
 
         client_id = request.client.host # Simple IP-based limiting

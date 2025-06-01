@@ -126,7 +126,12 @@ def build_ffmpeg_options(crf: int, resolution: str, width: Optional[str], height
     
     vf_option = None
     if resolution == "custom" and width and height:
-        vf_option = f"scale={width}:{height}"
+        try:
+            int_width = int(width)
+            int_height = int(height)
+            vf_option = f"scale={int_width}:{int_height}"
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid width or height for custom resolution")
     elif resolution in scale_map:
         vf_option = f"scale={scale_map[resolution]}"
     elif resolution != "source":
@@ -197,8 +202,10 @@ async def get_upload_url_endpoint(filename: str, file_size: int = Query(...), cu
 async def run_ffmpeg_job_r2(
     job_id: str, key: str, filename: str, ffmpeg_options: list, client_id: str
 ):
-    temp_input = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
-    temp_output = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
+    fd_input, temp_input = tempfile.mkstemp(suffix=".mp4")
+    fd_output, temp_output = tempfile.mkstemp(suffix=".mp4")
+    os.close(fd_input)
+    os.close(fd_output)
 
     try:
         r2_client.download_file(settings.R2_BUCKET_NAME, key, temp_input)
@@ -224,7 +231,10 @@ async def run_ffmpeg_job_r2(
                 r2_client.head_object(Bucket=settings.R2_BUCKET_NAME, Key=key)
                 r2_client.delete_object(Bucket=settings.R2_BUCKET_NAME, Key=key)
             except Exception as e:
-                pass
+                if hasattr(e, 'response') and e.response.get('Error', {}).get('Code') == '404':
+                    pass
+                else:
+                    pass
     except HTTPException as e:
         if client_id in clients:
             try: await clients[client_id].send_text(json.dumps({"type": "error", "detail": e.detail}))

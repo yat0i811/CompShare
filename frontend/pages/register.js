@@ -5,6 +5,7 @@ export default function Register() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [message, setMessage] = useState("");
+  const [isRegistered, setIsRegistered] = useState(false);
 
   const handleRegister = async () => {
     const formData = new FormData();
@@ -19,18 +20,24 @@ export default function Register() {
     if (res.ok) {
       const data = await res.json();
       setMessage(data.message);
+      setIsRegistered(true);
     } else {
       const err = await res.json();
       setMessage(`⚠️ ${err.detail}`);
+      setIsRegistered(false);
     }
   };
 
   return (
     <div className="container">
       <h2>ユーザー登録</h2>
-      <input type="text" placeholder="ユーザー名" value={username} onChange={(e) => setUsername(e.target.value)} />
-      <input type="password" placeholder="パスワード" value={password} onChange={(e) => setPassword(e.target.value)} />
-      <button onClick={handleRegister}>登録</button>
+      {!isRegistered && (
+        <>
+          <input type="text" placeholder="ユーザー名" value={username} onChange={(e) => setUsername(e.target.value)} />
+          <input type="password" placeholder="パスワード" value={password} onChange={(e) => setPassword(e.target.value)} />
+          <button onClick={handleRegister}>登録</button>
+        </>
+      )}
       {message && <p className="registration-message">{message}</p>}
       <style jsx>{`
         .container {
