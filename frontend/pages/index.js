@@ -98,6 +98,12 @@ export default function Home() {
             padding: 2rem;
             text-align: center;
           }
+          .login-container h2 {
+            font-size: 1.5rem;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+          }
           .login-container input {
             width: 100%;
             padding: 0.5rem;
