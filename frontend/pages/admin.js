@@ -135,9 +135,9 @@ const RemoveButton = styled(BaseButton)`
 // 容量選択肢
 const capacityOptions = [
     { label: "100MB", value: 100 * 1024 * 1024 },
-    { label: "1GB", value: 1 * 1024 * 1024 * 1024 },
-    { label: "10GB", value: 10 * 1024 * 1024 * 1024 },
-    { label: "100GB", value: 100 * 1024 * 1024 * 1024 },
+    { label: "1GB", value: 1 * 1000 * 1024 * 1024 },
+    { label: "10GB", value: 10 * 1000 * 1024 * 1024 },
+    { label: "100GB", value: 100 * 1000 * 1024 * 1024 },
 ];
 
 // 容量変更関連のスタイル
@@ -177,7 +177,7 @@ const CapacityControl = styled.div`
 
 const AdminPage = () => {
     const router = useRouter();
-    const { token, isAdmin } = useAuth();
+    const { token, isAdmin, userInfo } = useAuth();
     const [users, setUsers] = useState([]);
     const [pendingUsers, setPendingUsers] = useState([]);
     const [error, setError] = useState('');
@@ -187,6 +187,11 @@ const AdminPage = () => {
     useEffect(() => {
         if (token === null || isAdmin === undefined) {
              return;
+        }
+
+        // デバッグ用: 管理者情報をコンソールに出力
+        if (userInfo) {
+            console.log("Current admin user info:", userInfo);
         }
 
         setIsLoading(false);
@@ -208,7 +213,7 @@ const AdminPage = () => {
         } else {
             setError('管理者権限がありません。');
         }
-    }, [token, isAdmin, router]);
+    }, [token, isAdmin, router, userInfo]);
 
     const fetchAdminData = async (currentToken) => {
         if (!currentToken) {
@@ -403,21 +408,27 @@ const AdminPage = () => {
             <UserSection>
                 <h2>全ユーザー</h2>
                 <UserGrid>
-                    {users.map(user => (
-                        <UserCard key={user.id}>
-                            <UserInfo>
-                                <div><strong>ユーザー名:</strong> {user.username}</div>
-                                <div>
-                                    <strong>承認状態:</strong> <StatusText isApproved={user.is_approved}>{user.is_approved ? '承認済み' : '未承認'}</StatusText>
-                                </div>
-                                <div>
-                                     <strong>権限:</strong> <RoleText isAdmin={user.is_admin}>{user.is_admin ? '管理者' : '一般'}</RoleText>
-                                </div>
-                                <div>
-                                     <strong>アップロード容量:</strong> {user.upload_capacity_bytes ? `${(user.upload_capacity_bytes / (1024*1024*1024)).toFixed(2)} GB` : '未設定'}
-                                </div>
-                            </UserInfo>
-                            {!user.is_admin && ( // 管理者自身の容量は変更できないようにする
+                    {users.map(user => {
+                        // 現在ログイン中の管理者自身かどうかを判定
+                        const isCurrentUser = userInfo && user.username === userInfo.username;
+                        return (
+                            <UserCard key={user.id}>
+                                <UserInfo>
+                                    <div>
+                                        <strong>ユーザー名:</strong> {user.username}
+                                        {isCurrentUser && <span style={{color: '#e74c3c', fontWeight: 'bold', marginLeft: '8px'}}>(あなた)</span>}
+                                    </div>
+                                    <div>
+                                        <strong>承認状態:</strong> <StatusText isApproved={user.is_approved}>{user.is_approved ? '承認済み' : '未承認'}</StatusText>
+                                    </div>
+                                    <div>
+                                         <strong>権限:</strong> <RoleText isAdmin={user.is_admin}>{user.is_admin ? '管理者' : '一般'}</RoleText>
+                                    </div>
+                                    <div>
+                                         <strong>アップロード容量:</strong> {user.upload_capacity_bytes ? `${(user.upload_capacity_bytes / (1000*1024*1024)).toFixed(2)} GB` : '未設定'}
+                                    </div>
+                                </UserInfo>
+                                {/* 管理者も含めて全員の容量変更を可能にする */}
                                 <CapacityControl>
                                     <select
                                         value={user.selectedCapacity}
@@ -437,18 +448,19 @@ const AdminPage = () => {
                                         {updatingUser === user.username ? '更新中...' : '更新'}
                                     </button>
                                 </CapacityControl>
-                            )}
-                            {!user.is_admin && (
-                                <ButtonContainer>
-                                    {!user.is_approved && (
-                                        <ApproveButton onClick={() => handleApprove(user.username)}>承認</ApproveButton>
-                                    )}
-                                    <RejectButton onClick={() => handleReject(user.username)}>拒否</RejectButton>
-                                     <RemoveButton onClick={() => handleRemove(user.username)}>削除</RemoveButton>
-                                </ButtonContainer>
-                            )}
-                        </UserCard>
-                    ))}
+                                {/* 管理者は承認・拒否・削除の対象外 */}
+                                {!user.is_admin && (
+                                    <ButtonContainer>
+                                        {!user.is_approved && (
+                                            <ApproveButton onClick={() => handleApprove(user.username)}>承認</ApproveButton>
+                                        )}
+                                        <RejectButton onClick={() => handleReject(user.username)}>拒否</RejectButton>
+                                         <RemoveButton onClick={() => handleRemove(user.username)}>削除</RemoveButton>
+                                    </ButtonContainer>
+                                )}
+                            </UserCard>
+                        );
+                    })}
                 </UserGrid>
             </UserSection>
 

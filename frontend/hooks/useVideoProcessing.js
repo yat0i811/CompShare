@@ -10,7 +10,7 @@ import {
 } from '../utils/constants';
 
 // Custom hook for video processing logic
-export default function useVideoProcessing({ token, handleLogout }) {
+export default function useVideoProcessing({ token, handleLogout, userInfo }) {
   const [file, setFile] = useState(null);
   const [originalVideoUrl, setOriginalVideoUrl] = useState("");
   const [originalFileSize, setOriginalFileSize] = useState(0);
@@ -31,7 +31,7 @@ export default function useVideoProcessing({ token, handleLogout }) {
   const ws = useRef(null);
 
   const isExternal = typeof window !== "undefined" && !isLocalhost();
-  const MAX_FILE_SIZE = 1000 * 1024 * 1024;
+  // const MAX_FILE_SIZE = 1000 * 1024 * 1024; // この固定値は使用しないか、ユーザー容量と併用する形にする
 
   useEffect(() => {
     if (!token || !clientId) return;
@@ -79,7 +79,19 @@ export default function useVideoProcessing({ token, handleLogout }) {
     };
   }, [clientId, token]);
 
-  const formatSize = (bytes) => `${(bytes / 1024 / 1024).toFixed(2)} MB`;
+  const formatSize = (bytes) => {
+    if (bytes === null || bytes === undefined) return '-';
+    const GB = 1000 * 1024 * 1024; // 1GB = 1000MB (表示用)
+    const MB = 1024 * 1024; // 1MB
+
+    if (bytes >= GB) {
+      return `${(bytes / GB).toFixed(2)} GB`;
+    } else if (bytes >= MB) {
+      return `${(bytes / MB).toFixed(2)} MB`;
+    } else {
+      return `${bytes} バイト`; // 1MB以下はバイト表示
+    }
+  };
 
   const estimateCompressedSize = (originalSize, crfValue) => {
     const baseCrf = 18;
@@ -90,6 +102,10 @@ export default function useVideoProcessing({ token, handleLogout }) {
 
   const handleUpload = async () => {
     if (!file || !token || isUploading) return;
+
+    // ユーザーのアップロード容量を取得 (userInfo が利用可能であることを想定)
+    // userInfo.upload_capacity_bytes が存在しない場合のデフォルト値を設定 (例: 1GB)
+    const userCapacity = userInfo && userInfo.upload_capacity_bytes ? userInfo.upload_capacity_bytes : 1 * 1024 * 1024 * 1024;
 
     if (isTokenExpired(token)) {
       alert("セッションが切れました。再ログインしてください。");
@@ -111,12 +127,19 @@ export default function useVideoProcessing({ token, handleLogout }) {
         setIsUploading(false);
         return;
       }
-      
-      if (isExternal && file.size > MAX_FILE_SIZE) {
-        setErrorMessage("外部アクセスでは1GBを超える動画はアップロードできません。");
+
+      // ユーザーごとのアップロード容量上限チェック
+      if (file.size > userCapacity) {
+        setErrorMessage(`ファイルサイズが大きすぎます。あなたの上限は ${Math.floor(userCapacity / (1024*1024))} MBです。`);
         setIsUploading(false);
         return;
       }
+      
+      // if (isExternal && file.size > MAX_FILE_SIZE) { // ユーザー別容量チェックに含めるためコメントアウト
+      //   setErrorMessage("外部アクセスでは1GBを超える動画はアップロードできません。");
+      //   setIsUploading(false);
+      //   return;
+      // }
 
       const getUrlRes = await fetch(`${GET_UPLOAD_URL_ENDPOINT}?filename=${encodeURIComponent(file.name)}&file_size=${file.size}`, {
         headers: { Authorization: `Bearer ${token}` },
@@ -222,6 +245,6 @@ export default function useVideoProcessing({ token, handleLogout }) {
     downloadCompressedVideo,
     formatSize,
     estimateCompressedSize,
-    MAX_FILE_SIZE,
+    // MAX_FILE_SIZE,
   };
 }

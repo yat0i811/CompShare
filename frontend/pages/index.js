@@ -28,7 +28,7 @@ export default function Home() {
     downloadCompressedVideo,
     formatSize,
     estimateCompressedSize,
-  } = useVideoProcessing({ token, handleLogout });
+  } = useVideoProcessing({ token, handleLogout, userInfo });
 
   const [userUploadCapacity, setUserUploadCapacity] = useState(null);
   const [loadingCapacity, setLoadingCapacity] = useState(true);
