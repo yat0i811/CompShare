@@ -12,6 +12,11 @@ const Layout = ({ children }) => {
         setSidebarOpen(!sidebarOpen);
     };
 
+    const onLogout = () => {
+        handleLogout();
+        router.push('/');
+    };
+
     return (
         <div className="layout-container">
             <header className="header">
@@ -38,10 +43,7 @@ const Layout = ({ children }) => {
                             </li>
                         )}
                         <li className="logout-button-container">
-                             <button onClick={() => {
-                                 handleLogout();
-                                 window.location.reload();
-                             }}>ログアウト</button>
+                            <button onClick={onLogout}>ログアウト</button>
                         </li>
                     </ul>
                 </nav>
