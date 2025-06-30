@@ -196,7 +196,18 @@ export default function useVideoProcessing({ token, handleLogout, userInfo }) {
       
     } catch (err) {
       console.error("アップロード中にエラーが発生しました:", err);
-      setErrorMessage("アップロード中にエラーが発生しました。ファイル形式やサイズを確認してください。");
+
+      let errorMessage = "アップロード中にエラーが発生しました。";
+      
+      if (err.name === "TypeError" && err.message === "Failed to fetch") {
+        errorMessage = "ネットワークエラーが発生しました。CORS設定またはサーバーの接続を確認してください。";
+      } else if (err.message && err.message.includes("CORS")) {
+        errorMessage = "CORSエラーが発生しました。サーバーの設定を確認してください。";
+      } else if (err.message) {
+        errorMessage = `エラー詳細: ${err.message}`;
+      }
+      
+      setErrorMessage(errorMessage);
       setIsUploading(false);
     }
   };

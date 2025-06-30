@@ -227,9 +227,9 @@ async def get_upload_url_endpoint(
     presigned_url = r2_client.generate_presigned_url(
         'put_object',
         Params={'Bucket': settings.R2_BUCKET_NAME, 'Key': key},
-        ExpiresIn=3600,
+        ExpiresIn=settings.R2_UPLOAD_URL_EXPIRE_SECONDS,
     )
-    delete_after_delay(settings.R2_BUCKET_NAME, key, delay_seconds=3600 + 600)
+    delete_after_delay(settings.R2_BUCKET_NAME, key, delay_seconds=settings.R2_UPLOAD_URL_EXPIRE_SECONDS + settings.R2_FILE_DELETE_DELAY_SECONDS)
     
     # 成功ログ
     log_security_event(
@@ -262,7 +262,7 @@ async def run_ffmpeg_job_r2(
             url = r2_client.generate_presigned_url(
                 'get_object',
                 Params={'Bucket': settings.R2_BUCKET_NAME, 'Key': compressed_key},
-                ExpiresIn=3600
+                ExpiresIn=settings.R2_DOWNLOAD_URL_EXPIRE_SECONDS
             )
             file_size = os.path.getsize(temp_output)
             await clients[client_id].send_text(json.dumps({
@@ -371,7 +371,17 @@ async def compress_video_async_endpoint(
     for _ in range(10):
         if client_id in clients: break
         await asyncio.sleep(0.1)
-    return JSONResponse(content={"job_id": job_id, "status": "started"})
+    
+    # CORSヘッダーを明示的に追加
+    response = JSONResponse(content={"job_id": job_id, "status": "started"})
+    origin = request.headers.get("origin")
+    if origin and origin in settings.CORS_ALLOWED_ORIGINS:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "*"
+    
+    return response
 
 @router.post("/upload/", summary="ローカルでの動画アップロードと圧縮")
 async def upload_and_compress_local_endpoint(

@@ -45,16 +45,54 @@ if not R2_SECRET_ACCESS_KEY:
 
 app = FastAPI(lifespan=lifespan)
 
+# CORS設定を強化
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["*"],
+    max_age=3600,  # プリフライトリクエストのキャッシュ時間
 )
 
 app.add_middleware(ConditionalUploadLimitMiddleware)
 app.add_middleware(RateLimitMiddleware)
+
+# グローバルエラーハンドラーでCORSヘッダーを追加
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    response = JSONResponse(
+        status_code=500,
+        content={"detail": "Internal server error"}
+    )
+    
+    # CORSヘッダーを追加
+    origin = request.headers.get("origin")
+    if origin and origin in settings.CORS_ALLOWED_ORIGINS:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "*"
+    
+    return response
+
+# OPTIONSリクエスト用のハンドラー
+@app.options("/{full_path:path}")
+async def options_handler(request: Request, full_path: str):
+    origin = request.headers.get("origin")
+    if origin and origin in settings.CORS_ALLOWED_ORIGINS:
+        return Response(
+            status_code=200,
+            headers={
+                "Access-Control-Allow-Origin": origin,
+                "Access-Control-Allow-Credentials": "true",
+                "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+                "Access-Control-Allow-Headers": "*",
+                "Access-Control-Max-Age": "3600",
+            }
+        )
+    return Response(status_code=200)
 
 app.include_router(auth_router.router, prefix="/auth", tags=["auth"])
 app.include_router(admin_router.router, prefix="/admin", tags=["admin"])
