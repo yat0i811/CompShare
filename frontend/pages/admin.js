@@ -242,7 +242,7 @@ const AdminPage = () => {
                 setUsers(usersData.map(user => ({
                     ...user,
                     // capacityInput: bytesToMB(user.upload_capacity_bytes) // 初期値をMBで設定 -> バイト値を直接保持
-                    selectedCapacity: user.upload_capacity_bytes || capacityOptions[1].value // デフォルトまたは1GB
+                    selectedCapacity: user.upload_capacity_bytes || capacityOptions[0].value // デフォルトまたは100MB
                 })));
             } else {
                 const errorData = await usersRes.json().catch(() => ({ detail: 'ユーザー一覧の取得に失敗しました。' }));

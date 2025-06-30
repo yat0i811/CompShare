@@ -3,6 +3,7 @@ from starlette.requests import Request as StarletteRequest
 from starlette.responses import Response as StarletteResponse, JSONResponse
 import time
 from core.config import settings
+from utils.security import get_client_ip
 
 # 1GB
 MAX_SIZE_EXTERNAL = 1024 * 1024 * 1024
@@ -17,7 +18,7 @@ class ConditionalUploadLimitMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: StarletteRequest, call_next):
         content_length = int(request.headers.get("content-length", 0))
         host = request.headers.get("host", "")
-        client_ip = request.client.host
+        client_ip = get_client_ip(request)
 
         # ローカルホストまたはローカルIPからのアクセスは制限をスキップ
         if host.startswith("localhost") or host.startswith("127.0.0.1") or client_ip.startswith("127."):
@@ -37,7 +38,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if request.url.path not in ["/upload/", "/compress/async/", "/auth/register"]:
             return await call_next(request)
 
-        client_id = request.client.host # Simple IP-based limiting
+        client_id = get_client_ip(request) # Simple IP-based limiting
         current_time = time.time()
 
         # Remove old entries

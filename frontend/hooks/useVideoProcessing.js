@@ -3,7 +3,8 @@ import { v4 as uuidv4 } from "uuid";
 import {
     BASE_URL, 
     GET_UPLOAD_URL_ENDPOINT, 
-    COMPRESS_URL_ENDPOINT, 
+    COMPRESS_URL_ENDPOINT,
+    DOWNLOAD_URL_ENDPOINT,
     WS_URL_BASE,
     isLocalhost,
     isTokenExpired
@@ -24,6 +25,7 @@ export default function useVideoProcessing({ token, handleLogout, userInfo }) {
   const [customWidth, setCustomWidth] = useState("");
   const [customHeight, setCustomHeight] = useState("");
   const [isUploading, setIsUploading] = useState(false);
+  const [isDownloading, setIsDownloading] = useState(false);
   const [errorMessage, setErrorMessage] = useState("");
   const [modifiedFile, setModifiedFile] = useState(null);
   const [modifiedVideoUrl, setModifiedVideoUrl] = useState("");
@@ -86,10 +88,8 @@ export default function useVideoProcessing({ token, handleLogout, userInfo }) {
 
     if (bytes >= GB) {
       return `${(bytes / GB).toFixed(2)} GB`;
-    } else if (bytes >= MB) {
-      return `${(bytes / MB).toFixed(2)} MB`;
     } else {
-      return `${bytes} バイト`; // 1MB以下はバイト表示
+      return `${(bytes / MB).toFixed(2)} MB`;
     }
   };
 
@@ -104,8 +104,8 @@ export default function useVideoProcessing({ token, handleLogout, userInfo }) {
     if (!file || !token || isUploading) return;
 
     // ユーザーのアップロード容量を取得 (userInfo が利用可能であることを想定)
-    // userInfo.upload_capacity_bytes が存在しない場合のデフォルト値を設定 (例: 1GB)
-    const userCapacity = userInfo && userInfo.upload_capacity_bytes ? userInfo.upload_capacity_bytes : 1 * 1024 * 1024 * 1024;
+    // userInfo.upload_capacity_bytes が存在しない場合のデフォルト値を設定 (例: 100MB)
+    const userCapacity = userInfo && userInfo.upload_capacity_bytes ? userInfo.upload_capacity_bytes : 104857600;
 
     if (isTokenExpired(token)) {
       alert("セッションが切れました。再ログインしてください。");
@@ -202,27 +202,50 @@ export default function useVideoProcessing({ token, handleLogout, userInfo }) {
   };
 
   const downloadCompressedVideo = () => {
-    if (!compressedVideoUrl) return;
+    if (!compressedFileName || isDownloading) return;
 
-    // Fetch the video data
-    fetch(compressedVideoUrl)
-      .then(response => response.blob())
-      .then(blob => {
-        // Create a blob URL
-        const blobUrl = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = blobUrl;
-        a.download = compressedFileName || "compressed_video.mp4";
-        document.body.appendChild(a);
-        a.click();
-        // Clean up by revoking the blob URL and removing the link
-        document.body.removeChild(a);
-        URL.revokeObjectURL(blobUrl);
-      })
-      .catch(error => {
-        console.error("Error downloading the video:", error);
-        setErrorMessage("動画のダウンロード中にエラーが発生しました。");
-      });
+    setIsDownloading(true);
+    setErrorMessage("");
+
+    // 新しいダウンロードエンドポイントを使用
+    const downloadUrl = `${DOWNLOAD_URL_ENDPOINT}${encodeURIComponent(compressedFileName)}`;
+    
+    // 認証トークン付きでダウンロード
+    fetch(downloadUrl, {
+      headers: { 
+        Authorization: `Bearer ${token}` 
+      }
+    })
+    .then(response => {
+      if (!response.ok) {
+        if (response.status === 404) {
+          throw new Error("ファイルが見つかりません。圧縮処理が完了していない可能性があります。");
+        } else if (response.status === 401) {
+          throw new Error("認証エラーです。再ログインしてください。");
+        } else {
+          throw new Error(`ダウンロードエラー (${response.status})`);
+        }
+      }
+      return response.blob();
+    })
+    .then(blob => {
+      // Create a blob URL
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = blobUrl;
+      a.download = compressedFileName;
+      document.body.appendChild(a);
+      a.click();
+      // Clean up by revoking the blob URL and removing the link
+      document.body.removeChild(a);
+      URL.revokeObjectURL(blobUrl);
+      setIsDownloading(false);
+    })
+    .catch(error => {
+      console.error("Error downloading the video:", error);
+      setErrorMessage(error.message || "動画のダウンロード中にエラーが発生しました。");
+      setIsDownloading(false);
+    });
   };
 
   return {
@@ -238,6 +261,7 @@ export default function useVideoProcessing({ token, handleLogout, userInfo }) {
     customWidth, setCustomWidth,
     customHeight, setCustomHeight,
     isUploading,
+    isDownloading,
     errorMessage, setErrorMessage,
     modifiedFile, setModifiedFile,
     modifiedVideoUrl, setModifiedVideoUrl,

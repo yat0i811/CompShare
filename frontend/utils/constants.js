@@ -8,6 +8,7 @@ export const WS_URL_BASE = isLocalhost() ? 'ws://localhost:8001/ws' : 'wss://com
 
 export const GET_UPLOAD_URL_ENDPOINT = `${BASE_URL}/get-upload-url`;
 export const COMPRESS_URL_ENDPOINT = `${BASE_URL}/compress/async/`;
+export const DOWNLOAD_URL_ENDPOINT = `${BASE_URL}/download/`;
 export const LOGIN_URL = `${BASE_URL}/auth/login`;
 export const REGISTER_URL = `${BASE_URL}/auth/register`;
 export const ME_URL = `${BASE_URL}/auth/me`;

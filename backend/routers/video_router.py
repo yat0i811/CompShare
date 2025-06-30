@@ -2,7 +2,7 @@ from fastapi import (
     APIRouter, WebSocket, WebSocketDisconnect, HTTPException, Response, 
     Request, Depends, BackgroundTasks, File, Form, UploadFile, Query
 )
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 import os, uuid, shutil, subprocess, asyncio, magic, tempfile, time, json
 from typing import Dict, Optional, List
 
@@ -10,6 +10,10 @@ from core.config import settings
 from .auth_router import get_current_user_from_token, get_current_admin_user_from_dependency
 import boto3
 from db import crud
+from utils.security import (
+    sanitize_filename, validate_filename, log_file_upload_attempt, 
+    log_security_violation, log_security_event, get_client_ip
+)
 
 from jose import jwt, JWTError
 
@@ -181,22 +185,60 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str, token: str = 
         clients.pop(client_id, None)
 
 @router.get("/get-upload-url", summary="署名付きアップロードURL取得")
-async def get_upload_url_endpoint(filename: str, file_size: int = Query(...), current_user: dict = Depends(get_current_user_from_token)):
+async def get_upload_url_endpoint(
+    request: Request,
+    filename: str, 
+    file_size: int = Query(...), 
+    current_user: dict = Depends(get_current_user_from_token)
+):
     user_from_db = await crud.get_user_by_username(current_user["sub"])
     if not user_from_db:
+        log_security_violation(
+            request=request,
+            user=current_user.get("sub"),
+            violation_type="USER_NOT_FOUND",
+            details=f"User {current_user.get('sub')} not found in database"
+        )
         raise HTTPException(status_code=404, detail="ユーザーが見つかりません")
 
-    user_capacity = user_from_db.get("upload_capacity_bytes", 1073741824) # Default to 1GB
+    # ファイル名の検証とサニタイゼーション
+    if not validate_filename(filename):
+        log_security_violation(
+            request=request,
+            user=current_user["sub"],
+            violation_type="INVALID_FILENAME",
+            details=f"Invalid filename: {filename}"
+        )
+        raise HTTPException(status_code=400, detail="無効なファイル名です")
+
+    sanitized_filename = sanitize_filename(filename)
+    
+    user_capacity = user_from_db.get("upload_capacity_bytes", 104857600) # Default to 100MB
     if file_size > user_capacity:
+        log_security_violation(
+            request=request,
+            user=current_user["sub"],
+            violation_type="FILE_SIZE_EXCEEDED",
+            details=f"File size {file_size} exceeds user capacity {user_capacity}"
+        )
         raise HTTPException(status_code=413, detail=f"ファイルサイズが大きすぎます。上限は {user_capacity // (1024*1024)} MBです。")
 
-    key = f"uploads/{uuid.uuid4().hex}_{filename}"
+    key = f"uploads/{uuid.uuid4().hex}_{sanitized_filename}"
     presigned_url = r2_client.generate_presigned_url(
         'put_object',
         Params={'Bucket': settings.R2_BUCKET_NAME, 'Key': key},
         ExpiresIn=3600,
     )
     delete_after_delay(settings.R2_BUCKET_NAME, key, delay_seconds=3600 + 600)
+    
+    # 成功ログ
+    log_security_event(
+        event_type="UPLOAD_URL_GENERATED",
+        user=current_user["sub"],
+        ip_address=get_client_ip(request),
+        details=f"Generated upload URL for file: {sanitized_filename}, size: {file_size}"
+    )
+    
     return {"upload_url": presigned_url, "key": key}
 
 async def run_ffmpeg_job_r2(
@@ -249,6 +291,7 @@ async def run_ffmpeg_job_r2(
 
 @router.post("/compress/async/", summary="R2経由での非同期動画圧縮")
 async def compress_video_async_endpoint(
+    request: Request,
     background_tasks: BackgroundTasks,
     key: str = Form(...),
     filename: str = Form(...),
@@ -259,9 +302,72 @@ async def compress_video_async_endpoint(
     client_id: str = Form(...),
     current_user: dict = Depends(get_current_user_from_token)
 ):
+    # ファイル名の検証
+    if not validate_filename(filename):
+        log_security_violation(
+            request=request,
+            user=current_user["sub"],
+            violation_type="INVALID_FILENAME",
+            details=f"Invalid filename in async compression: {filename}"
+        )
+        raise HTTPException(status_code=400, detail="無効なファイル名です")
+    
+    # CRF値の検証
+    if not (18 <= crf <= 32):
+        log_security_violation(
+            request=request,
+            user=current_user["sub"],
+            violation_type="INVALID_CRF_VALUE",
+            details=f"Invalid CRF value: {crf}"
+        )
+        raise HTTPException(status_code=400, detail="CRF値は18から32の間である必要があります")
+    
+    # 解像度パラメータの検証
+    valid_resolutions = ["source", "4320p", "2160p", "1440p", "1080p", "720p", "480p", "360p", "custom"]
+    if resolution not in valid_resolutions:
+        log_security_violation(
+            request=request,
+            user=current_user["sub"],
+            violation_type="INVALID_RESOLUTION",
+            details=f"Invalid resolution: {resolution}"
+        )
+        raise HTTPException(status_code=400, detail="無効な解像度です")
+    
+    # カスタム解像度の検証
+    if resolution == "custom":
+        try:
+            if width and height:
+                int_width = int(width)
+                int_height = int(height)
+                if int_width <= 0 or int_height <= 0 or int_width > 7680 or int_height > 4320:
+                    log_security_violation(
+                        request=request,
+                        user=current_user["sub"],
+                        violation_type="INVALID_CUSTOM_RESOLUTION",
+                        details=f"Invalid custom resolution: {width}x{height}"
+                    )
+                    raise HTTPException(status_code=400, detail="カスタム解像度は1x1から7680x4320の間である必要があります")
+        except ValueError:
+            log_security_violation(
+                request=request,
+                user=current_user["sub"],
+                violation_type="INVALID_CUSTOM_RESOLUTION",
+                details=f"Non-numeric custom resolution: {width}x{height}"
+            )
+            raise HTTPException(status_code=400, detail="カスタム解像度は数値である必要があります")
+    
     job_id = uuid.uuid4().hex
     ffmpeg_options = build_ffmpeg_options(crf, resolution, width, height)
     background_tasks.add_task(run_ffmpeg_job_r2, job_id, key, filename, ffmpeg_options, client_id)
+    
+    # 成功ログ
+    log_security_event(
+        event_type="ASYNC_COMPRESSION_STARTED",
+        user=current_user["sub"],
+        ip_address=get_client_ip(request),
+        details=f"Started async compression for file: {filename}, CRF: {crf}, Resolution: {resolution}"
+    )
+    
     for _ in range(10):
         if client_id in clients: break
         await asyncio.sleep(0.1)
@@ -269,6 +375,7 @@ async def compress_video_async_endpoint(
 
 @router.post("/upload/", summary="ローカルでの動画アップロードと圧縮")
 async def upload_and_compress_local_endpoint(
+    request: Request,
     file: UploadFile = File(...),
     filename: str = Form(...),
     crf: int = Form(28),
@@ -280,9 +387,27 @@ async def upload_and_compress_local_endpoint(
 ):
     user_from_db = await crud.get_user_by_username(current_user["sub"])
     if not user_from_db:
+        log_security_violation(
+            request=request,
+            user=current_user.get("sub"),
+            violation_type="USER_NOT_FOUND",
+            details=f"User {current_user.get('sub')} not found in database"
+        )
         raise HTTPException(status_code=404, detail="ユーザーが見つかりません")
 
-    user_capacity = user_from_db.get("upload_capacity_bytes", 1073741824) # Default to 1GB
+    # ファイル名の検証とサニタイゼーション
+    if not validate_filename(filename):
+        log_security_violation(
+            request=request,
+            user=current_user["sub"],
+            violation_type="INVALID_FILENAME",
+            details=f"Invalid filename in local upload: {filename}"
+        )
+        raise HTTPException(status_code=400, detail="無効なファイル名です")
+    
+    sanitized_filename = sanitize_filename(filename)
+
+    user_capacity = user_from_db.get("upload_capacity_bytes", 104857600) # Default to 100MB
     
     # Check file size before reading the entire file into memory
     # Get the file size from the UploadFile object
@@ -291,25 +416,101 @@ async def upload_and_compress_local_endpoint(
     file.file.seek(0) # Reset file pointer
 
     if file_size > user_capacity:
+        log_file_upload_attempt(
+            request=request,
+            user=current_user["sub"],
+            filename=sanitized_filename,
+            file_size=file_size,
+            success=False,
+            error_message=f"File size {file_size} exceeds user capacity {user_capacity}"
+        )
         raise HTTPException(status_code=413, detail=f"ファイルサイズが大きすぎます。上限は {user_capacity // (1024*1024)} MBです。")
+
+    # CRF値の検証
+    if not (18 <= crf <= 32):
+        log_security_violation(
+            request=request,
+            user=current_user["sub"],
+            violation_type="INVALID_CRF_VALUE",
+            details=f"Invalid CRF value in local upload: {crf}"
+        )
+        raise HTTPException(status_code=400, detail="CRF値は18から32の間である必要があります")
+    
+    # 解像度パラメータの検証
+    valid_resolutions = ["source", "4320p", "2160p", "1440p", "1080p", "720p", "480p", "360p", "custom"]
+    if resolution not in valid_resolutions:
+        log_security_violation(
+            request=request,
+            user=current_user["sub"],
+            violation_type="INVALID_RESOLUTION",
+            details=f"Invalid resolution in local upload: {resolution}"
+        )
+        raise HTTPException(status_code=400, detail="無効な解像度です")
+    
+    # カスタム解像度の検証
+    if resolution == "custom":
+        try:
+            if width and height:
+                int_width = int(width)
+                int_height = int(height)
+                if int_width <= 0 or int_height <= 0 or int_width > 7680 or int_height > 4320:
+                    log_security_violation(
+                        request=request,
+                        user=current_user["sub"],
+                        violation_type="INVALID_CUSTOM_RESOLUTION",
+                        details=f"Invalid custom resolution in local upload: {width}x{height}"
+                    )
+                    raise HTTPException(status_code=400, detail="カスタム解像度は1x1から7680x4320の間である必要があります")
+        except ValueError:
+            log_security_violation(
+                request=request,
+                user=current_user["sub"],
+                violation_type="INVALID_CUSTOM_RESOLUTION",
+                details=f"Non-numeric custom resolution in local upload: {width}x{height}"
+            )
+            raise HTTPException(status_code=400, detail="カスタム解像度は数値である必要があります")
 
     temp_input = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
     temp_output = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4").name
 
-    with open(temp_input, "wb") as f:
-        f.write(await file.read())
-
-    if not is_safe_video(temp_input):
-        os.remove(temp_input)
-        raise HTTPException(status_code=400, detail="Invalid or unsupported video file")
-
-    ffmpeg_options = build_ffmpeg_options(crf, resolution, width, height)
-
     try:
+        with open(temp_input, "wb") as f:
+            f.write(await file.read())
+
+        if not is_safe_video(temp_input):
+            log_security_violation(
+                request=request,
+                user=current_user["sub"],
+                violation_type="UNSAFE_VIDEO_FILE",
+                details=f"Unsafe video file detected: {sanitized_filename}"
+            )
+            os.remove(temp_input)
+            raise HTTPException(status_code=400, detail="Invalid or unsupported video file")
+
+        ffmpeg_options = build_ffmpeg_options(crf, resolution, width, height)
+
         await run_ffmpeg_process(temp_input, temp_output, ffmpeg_options, client_id)
+        
+        # 成功ログ
+        log_file_upload_attempt(
+            request=request,
+            user=current_user["sub"],
+            filename=sanitized_filename,
+            file_size=file_size,
+            success=True
+        )
+
     except HTTPException as e:
         if os.path.exists(temp_input): os.remove(temp_input)
         if os.path.exists(temp_output): os.remove(temp_output)
+        log_file_upload_attempt(
+            request=request,
+            user=current_user["sub"],
+            filename=sanitized_filename,
+            file_size=file_size,
+            success=False,
+            error_message=str(e.detail)
+        )
         raise e
     except Exception as e:
         if os.path.exists(temp_input): os.remove(temp_input)
@@ -317,6 +518,14 @@ async def upload_and_compress_local_endpoint(
         if client_id in clients:
             try: await clients[client_id].send_text(json.dumps({"type": "error", "detail": str(e)}))
             except: pass
+        log_file_upload_attempt(
+            request=request,
+            user=current_user["sub"],
+            filename=sanitized_filename,
+            file_size=file_size,
+            success=False,
+            error_message=str(e)
+        )
         raise HTTPException(status_code=500, detail=f"FFmpeg processing failed: {str(e)}")
 
     with open(temp_output, "rb") as f:
@@ -325,4 +534,67 @@ async def upload_and_compress_local_endpoint(
     if os.path.exists(temp_input): os.remove(temp_input)
     if os.path.exists(temp_output): os.remove(temp_output)
 
-    return Response(content=content, media_type="video/mp4") 
+    return Response(content=content, media_type="video/mp4")
+
+@router.get("/download/{filename}", summary="圧縮された動画のダウンロード")
+async def download_compressed_video_endpoint(
+    request: Request,
+    filename: str,
+    current_user: dict = Depends(get_current_user_from_token)
+):
+    # ファイル名の検証とサニタイゼーション
+    if not validate_filename(filename):
+        log_security_violation(
+            request=request,
+            user=current_user["sub"],
+            violation_type="INVALID_FILENAME",
+            details=f"Invalid filename in download: {filename}"
+        )
+        raise HTTPException(status_code=400, detail="無効なファイル名です")
+    
+    sanitized_filename = sanitize_filename(filename)
+    compressed_key = f"compressed/{sanitized_filename}"
+    
+    try:
+        # R2からファイルを取得
+        response = r2_client.get_object(Bucket=settings.R2_BUCKET_NAME, Key=compressed_key)
+        
+        # 成功ログ
+        log_security_event(
+            event_type="VIDEO_DOWNLOADED",
+            user=current_user["sub"],
+            ip_address=get_client_ip(request),
+            details=f"Downloaded compressed video: {sanitized_filename}"
+        )
+        
+        # ストリーミングレスポンスとして返す（大きなファイルに対応）
+        def generate():
+            for chunk in response['Body'].iter_chunks(chunk_size=8192):
+                yield chunk
+        
+        return StreamingResponse(
+            generate(),
+            media_type="video/mp4",
+            headers={
+                "Content-Disposition": f"attachment; filename={sanitized_filename}",
+                "Content-Length": str(response['ContentLength']) if 'ContentLength' in response else None
+            }
+        )
+        
+    except Exception as e:
+        if hasattr(e, 'response') and e.response.get('Error', {}).get('Code') == 'NoSuchKey':
+            log_security_violation(
+                request=request,
+                user=current_user["sub"],
+                violation_type="FILE_NOT_FOUND",
+                details=f"File not found in download: {sanitized_filename}"
+            )
+            raise HTTPException(status_code=404, detail="ファイルが見つかりません")
+        else:
+            log_security_violation(
+                request=request,
+                user=current_user["sub"],
+                violation_type="DOWNLOAD_ERROR",
+                details=f"Download error for {sanitized_filename}: {str(e)}"
+            )
+            raise HTTPException(status_code=500, detail="ダウンロード中にエラーが発生しました") 

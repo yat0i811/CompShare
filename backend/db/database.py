@@ -19,7 +19,7 @@ async def init_db():
                 hashed_password TEXT NOT NULL,
                 is_approved BOOLEAN DEFAULT FALSE,
                 is_admin BOOLEAN DEFAULT FALSE,
-                upload_capacity_bytes INTEGER DEFAULT 1073741824 -- Default to 1GB
+                upload_capacity_bytes INTEGER DEFAULT 104857600 -- Default to 100MB
             )
         """)
         await db.commit()

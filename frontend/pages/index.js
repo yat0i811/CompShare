@@ -23,6 +23,7 @@ export default function Home() {
     customWidth, setCustomWidth,
     customHeight, setCustomHeight,
     isUploading,
+    isDownloading,
     errorMessage, setErrorMessage,
     handleUpload,
     downloadCompressedVideo,
@@ -192,7 +193,9 @@ export default function Home() {
           <div className="card">
             <h2>圧縮後動画 ({formatSize(compressedFileSize)})</h2>
             <video src={compressedVideoUrl} controls width="100%"></video>
-            <button onClick={downloadCompressedVideo}>ダウンロード</button>
+            <button onClick={downloadCompressedVideo} disabled={isDownloading}>
+              {isDownloading ? "ダウンロード中..." : "ダウンロード"}
+            </button>
           </div>
         )}
       </div>
