@@ -19,6 +19,7 @@ export default function Home() {
     compressedFileSize, setCompressedFileSize,
     progress, setProgress,
     crf, setCrf,
+    bitrate, setBitrate,
     resolution, setResolution,
     customWidth, setCustomWidth,
     customHeight, setCustomHeight,
@@ -29,6 +30,8 @@ export default function Home() {
     downloadCompressedVideo,
     formatSize,
     estimateCompressedSize,
+    getVideoDimensions,
+    useGPU, setUseGPU,
   } = useVideoProcessing({ token, handleLogout, userInfo });
 
   const [userUploadCapacity, setUserUploadCapacity] = useState(null);
@@ -45,7 +48,7 @@ export default function Home() {
     }
   }, [userInfo, token]);
 
-  const handleFileChange = (event) => {
+  const handleFileChange = async (event) => {
     const selectedFile = event.target.files[0];
     if (selectedFile) {
       setFile(selectedFile);
@@ -54,6 +57,17 @@ export default function Home() {
       setCompressedFileSize(0);
       setProgress(0);
       setErrorMessage("");
+      
+      // 動画の解像度を取得してビットレートのデフォルト値を設定
+      if (selectedFile.type.startsWith("video/")) {
+        try {
+          const { width, height, defaultBitrate } = await getVideoDimensions(selectedFile);
+          setBitrate(defaultBitrate);
+        } catch (error) {
+          console.warn("動画の解像度取得に失敗しました:", error);
+          setBitrate(3); // デフォルト値
+        }
+      }
     }
   };
 
@@ -140,10 +154,42 @@ export default function Home() {
             <p className="upload-limit-text">アップロード容量の取得に失敗しました。</p>
           )}
           <div className="control">
-            <label>画質（CRF）:</label>
-            <input type="range" min="18" max="32" value={crf} onChange={(e) => setCrf(parseInt(e.target.value, 10))} /> {crf}
+            <label className="checkbox-label">
+              <input
+                type="checkbox"
+                checked={useGPU}
+                onChange={(e) => setUseGPU(e.target.checked)}
+              />
+              GPUを使用して高速化（推奨）
+            </label>
           </div>
-          {file && (
+          {useGPU ? (
+            <div className="control">
+              <label>ビットレート（CBR）: {bitrate} Mbps</label>
+              <input 
+                type="range" 
+                min="1" 
+                max="20" 
+                step="0.5"
+                value={bitrate} 
+                onChange={(e) => setBitrate(parseFloat(e.target.value))} 
+              />
+              <p className="hint">ビットレートが低いほどファイルサイズが小さくなりますが、画質も低下します。</p>
+            </div>
+          ) : (
+            <div className="control">
+              <label>画質（CRF）: {crf}</label>
+              <input 
+                type="range" 
+                min="18" 
+                max="32" 
+                value={crf} 
+                onChange={(e) => setCrf(parseInt(e.target.value, 10))} 
+              />
+              <p className="hint">CRF値が高いほどファイルサイズが小さくなりますが、画質も低下します。</p>
+            </div>
+          )}
+          {file && !useGPU && (
             <p className="hint">
               推定圧縮後サイズ: {formatSize(estimateCompressedSize(file.size, crf))}
             </p>
@@ -164,11 +210,20 @@ export default function Home() {
           </div>
           {resolution === "custom" && (
             <div className="control">
-              <label>カスタム解像度:</label>
               <div className="custom-resolution-inputs">
-                <input type="number" placeholder="幅" value={customWidth} onChange={(e) => handleCustomResolutionChange(e, "width")} />
-                <span> x </span>
-                <input type="number" placeholder="高さ" value={customHeight} onChange={(e) => handleCustomResolutionChange(e, "height")} />
+                <input
+                  type="number"
+                  placeholder="幅"
+                  value={customWidth}
+                  onChange={(e) => setCustomWidth(e.target.value)}
+                />
+                <span>×</span>
+                <input
+                  type="number"
+                  placeholder="高さ"
+                  value={customHeight}
+                  onChange={(e) => setCustomHeight(e.target.value)}
+                />
               </div>
             </div>
           )}
@@ -191,6 +246,7 @@ export default function Home() {
 
         {compressedVideoUrl && (
           <div className="card">
+            <h3>圧縮完了</h3>
             <h2>圧縮後動画 ({formatSize(compressedFileSize)})</h2>
             <video src={compressedVideoUrl} controls width="100%"></video>
             <button onClick={downloadCompressedVideo} disabled={isDownloading}>
@@ -313,6 +369,11 @@ export default function Home() {
           font-size: 0.9em;
           color: #555;
           margin-bottom: 10px;
+        }
+        .checkbox-label {
+          display: flex;
+          align-items: center;
+          gap: 10px;
         }
       `}</style>
     </>

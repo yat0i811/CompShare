@@ -21,6 +21,7 @@ export default function useVideoProcessing({ token, handleLogout, userInfo }) {
   const [progress, setProgress] = useState(0);
   const [clientId] = useState(uuidv4());
   const [crf, setCrf] = useState(28);
+  const [bitrate, setBitrate] = useState(3); // ビットレート設定（Mbps）
   const [resolution, setResolution] = useState("source");
   const [customWidth, setCustomWidth] = useState("");
   const [customHeight, setCustomHeight] = useState("");
@@ -29,6 +30,7 @@ export default function useVideoProcessing({ token, handleLogout, userInfo }) {
   const [errorMessage, setErrorMessage] = useState("");
   const [modifiedFile, setModifiedFile] = useState(null);
   const [modifiedVideoUrl, setModifiedVideoUrl] = useState("");
+  const [useGPU, setUseGPU] = useState(true);
 
   const ws = useRef(null);
 
@@ -56,8 +58,12 @@ export default function useVideoProcessing({ token, handleLogout, userInfo }) {
           setCompressedFileName(data.filename);
           setCompressedFileSize(data.size || 0);
           setProgress(100);
+          setIsUploading(false);
+          setErrorMessage("");
         } else if (data.type === "progress") {
           setProgress(data.value);
+        } else if (data.type === "warning") {
+          setErrorMessage(`⚠️ ${data.detail}`);
         } else if (data.type === "error") {
           setErrorMessage(data.detail || "サーバーで圧縮エラーが発生しました。");
           setIsUploading(false);
@@ -98,6 +104,40 @@ export default function useVideoProcessing({ token, handleLogout, userInfo }) {
     const compressionRate = 0.1285;
     const factor = Math.pow(1 - compressionRate, crfValue - baseCrf);
     return originalSize * factor;
+  };
+
+  // 動画の解像度を取得してビットレートのデフォルト値を設定
+  const getVideoDimensions = (file) => {
+    return new Promise((resolve) => {
+      const video = document.createElement('video');
+      video.preload = 'metadata';
+      
+      video.onloadedmetadata = () => {
+        const width = video.videoWidth;
+        const height = video.videoHeight;
+        
+        // 解像度に応じたデフォルトビットレート設定
+        let defaultBitrate;
+        if (width >= 3840 || height >= 2160) {  // 4K
+          defaultBitrate = 8;
+        } else if (width >= 1920 || height >= 1080) {  // 1080p
+          defaultBitrate = 3;
+        } else if (width >= 1280 || height >= 720) {  // 720p
+          defaultBitrate = 2;
+        } else {  // 480p以下
+          defaultBitrate = 1;
+        }
+        
+        resolve({ width, height, defaultBitrate });
+      };
+      
+      video.onerror = () => {
+        // エラーの場合はデフォルト値を返す
+        resolve({ width: 1920, height: 1080, defaultBitrate: 3 });
+      };
+      
+      video.src = URL.createObjectURL(file);
+    });
   };
 
   const handleUpload = async () => {
@@ -168,6 +208,7 @@ export default function useVideoProcessing({ token, handleLogout, userInfo }) {
       const compressFormData = new FormData();
       compressFormData.append("filename", file.name);
       compressFormData.append("crf", crf);
+      compressFormData.append("bitrate", bitrate);
       compressFormData.append("resolution", resolution);
       if (resolution === "custom") {
         if (!customWidth || !customHeight || parseInt(customWidth, 10) <= 0 || parseInt(customHeight, 10) <= 0) {
@@ -178,6 +219,7 @@ export default function useVideoProcessing({ token, handleLogout, userInfo }) {
         compressFormData.append("width", customWidth);
         compressFormData.append("height", customHeight);
       }
+      compressFormData.append("use_gpu", useGPU);
       compressFormData.append("client_id", clientId);
       compressFormData.append("key", key);
 
@@ -212,34 +254,54 @@ export default function useVideoProcessing({ token, handleLogout, userInfo }) {
     }
   };
 
-  const downloadCompressedVideo = () => {
+  const downloadCompressedVideo = async () => {
     if (!compressedFileName || isDownloading) return;
 
     setIsDownloading(true);
     setErrorMessage("");
 
-    // 新しいダウンロードエンドポイントを使用
-    const downloadUrl = `${DOWNLOAD_URL_ENDPOINT}${encodeURIComponent(compressedFileName)}`;
-    
-    // 認証トークン付きでダウンロード
-    fetch(downloadUrl, {
-      headers: { 
-        Authorization: `Bearer ${token}` 
+    try {
+      // 圧縮処理の完了を確認
+      const checkResponse = await fetch(`${BASE_URL}/check-compression/${encodeURIComponent(compressedFileName)}`, {
+        headers: { 
+          Authorization: `Bearer ${token}` 
+        }
+      });
+
+      if (!checkResponse.ok) {
+        throw new Error(`圧縮状態の確認に失敗しました (${checkResponse.status})`);
       }
-    })
-    .then(response => {
-      if (!response.ok) {
-        if (response.status === 404) {
+
+      const checkData = await checkResponse.json();
+      
+      if (checkData.status === "processing") {
+        setErrorMessage("圧縮処理がまだ完了していません。しばらく待ってから再試行してください。");
+        setIsDownloading(false);
+        return;
+      }
+
+      // ダウンロードURLを構築
+      const downloadUrl = `${DOWNLOAD_URL_ENDPOINT}${encodeURIComponent(compressedFileName)}`;
+      
+      // 認証トークン付きでダウンロード
+      const downloadResponse = await fetch(downloadUrl, {
+        headers: { 
+          Authorization: `Bearer ${token}` 
+        }
+      });
+
+      if (!downloadResponse.ok) {
+        if (downloadResponse.status === 404) {
           throw new Error("ファイルが見つかりません。圧縮処理が完了していない可能性があります。");
-        } else if (response.status === 401) {
+        } else if (downloadResponse.status === 401) {
           throw new Error("認証エラーです。再ログインしてください。");
         } else {
-          throw new Error(`ダウンロードエラー (${response.status})`);
+          throw new Error(`ダウンロードエラー (${downloadResponse.status})`);
         }
       }
-      return response.blob();
-    })
-    .then(blob => {
+
+      const blob = await downloadResponse.blob();
+      
       // Create a blob URL
       const blobUrl = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -251,12 +313,12 @@ export default function useVideoProcessing({ token, handleLogout, userInfo }) {
       document.body.removeChild(a);
       URL.revokeObjectURL(blobUrl);
       setIsDownloading(false);
-    })
-    .catch(error => {
+      
+    } catch (error) {
       console.error("Error downloading the video:", error);
       setErrorMessage(error.message || "動画のダウンロード中にエラーが発生しました。");
       setIsDownloading(false);
-    });
+    }
   };
 
   return {
@@ -268,6 +330,7 @@ export default function useVideoProcessing({ token, handleLogout, userInfo }) {
     compressedFileSize, setCompressedFileSize,
     progress, setProgress,
     crf, setCrf,
+    bitrate, setBitrate,
     resolution, setResolution,
     customWidth, setCustomWidth,
     customHeight, setCustomHeight,
@@ -276,10 +339,12 @@ export default function useVideoProcessing({ token, handleLogout, userInfo }) {
     errorMessage, setErrorMessage,
     modifiedFile, setModifiedFile,
     modifiedVideoUrl, setModifiedVideoUrl,
+    useGPU, setUseGPU,
     handleUpload,
     downloadCompressedVideo,
     formatSize,
     estimateCompressedSize,
+    getVideoDimensions,
     // MAX_FILE_SIZE,
   };
 }
