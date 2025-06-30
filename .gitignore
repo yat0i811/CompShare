@@ -7,3 +7,5 @@ backend/db_data/
 # --- Node modules ---
 frontend/node_modules/
 
+# --- Logs ---
+backend/logs/
