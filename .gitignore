@@ -9,3 +9,4 @@ frontend/node_modules/
 
 # --- Logs ---
 backend/logs/
+backend/test_security.py
