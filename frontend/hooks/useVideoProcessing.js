@@ -178,7 +178,7 @@ export default function useVideoProcessing({ token, handleLogout, userInfo }) {
   };
 
   const handleUpload = async () => {
-    if (!file || !token || isUploading) return;
+    if (!file || isUploading) return;
 
     // ユーザーのアップロード容量を取得 (userInfo が利用可能であることを想定)
     // userInfo.upload_capacity_bytes が存在しない場合のデフォルト値を設定 (例: 100MB)
@@ -193,9 +193,6 @@ export default function useVideoProcessing({ token, handleLogout, userInfo }) {
     setIsUploading(true);
     setErrorMessage("");
     setProgress(0);
-    resetStates(); // 共有関連の状態をリセット
-    setOriginalVideoUrl(URL.createObjectURL(file));
-    setOriginalFileSize(file.size);
 
     try {
       if (!file.type.startsWith("video/")) {
@@ -210,13 +207,53 @@ export default function useVideoProcessing({ token, handleLogout, userInfo }) {
         setIsUploading(false);
         return;
       }
-      
-      // if (isExternal && file.size > MAX_FILE_SIZE) { // ユーザー別容量チェックに含めるためコメントアウト
-      //   setErrorMessage("外部アクセスでは1GBを超える動画はアップロードできません。");
-      //   setIsUploading(false);
-      //   return;
-      // }
 
+      // ローカルホスト環境ではバックエンド経由でアップロード
+      if (isLocalhost()) {
+        const uploadFormData = new FormData();
+        uploadFormData.append("file", file);
+        uploadFormData.append("filename", file.name);
+        uploadFormData.append("crf", crf);
+        uploadFormData.append("bitrate", bitrate);
+        uploadFormData.append("resolution", resolution);
+        if (resolution === "custom") {
+          if (!customWidth || !customHeight || parseInt(customWidth, 10) <= 0 || parseInt(customHeight, 10) <= 0) {
+            setErrorMessage("カスタム解像度の幅と高さには正の数値を入力してください。");
+            setIsUploading(false);
+            return;
+          }
+          uploadFormData.append("width", customWidth);
+          uploadFormData.append("height", customHeight);
+        }
+        uploadFormData.append("use_gpu", useGPU);
+        uploadFormData.append("client_id", clientId);
+
+        const uploadRes = await fetch(`${BASE_URL}/upload/`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}` },
+          body: uploadFormData,
+        });
+
+        if (!uploadRes.ok) {
+          const errorData = await uploadRes.json().catch(() => ({ detail: "ローカルアップロードに失敗しました。" }));
+          setErrorMessage(errorData.detail || "ローカルアップロードに失敗しました。");
+          setIsUploading(false);
+          return;
+        }
+
+        // ローカルアップロードの場合は直接ダウンロードリンクを作成
+        const blob = await uploadRes.blob();
+        const url = URL.createObjectURL(blob);
+        setCompressedVideoUrl(url);
+        setCompressedFileName(file.name.replace(/\.[^/.]+$/, "") + "_compressed.mp4");
+        setCompressedFileSize(blob.size);
+        setProgress(100);
+        setIsUploading(false);
+        setErrorMessage("");
+        return;
+      }
+
+      // 外部環境では従来のR2経由アップロード
       const getUrlRes = await fetch(`${GET_UPLOAD_URL_ENDPOINT}?filename=${encodeURIComponent(file.name)}&file_size=${file.size}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
@@ -297,6 +334,19 @@ export default function useVideoProcessing({ token, handleLogout, userInfo }) {
     setErrorMessage("");
 
     try {
+      // ローカルホスト環境では既にblob URLが作成されているので直接ダウンロード
+      if (isLocalhost() && compressedVideoUrl && compressedVideoUrl.startsWith('blob:')) {
+        const a = document.createElement("a");
+        a.href = compressedVideoUrl;
+        a.download = compressedFileName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        setIsDownloading(false);
+        return;
+      }
+
+      // 外部環境では従来のR2経由ダウンロード
       // 圧縮処理の完了を確認
       const checkResponse = await fetch(`${BASE_URL}/check-compression/${encodeURIComponent(compressedFileName)}`, {
         headers: { 
@@ -347,8 +397,8 @@ export default function useVideoProcessing({ token, handleLogout, userInfo }) {
       setIsDownloading(false);
       
     } catch (error) {
-      console.error("Error downloading the video:", error);
-      setErrorMessage(error.message || "動画のダウンロード中にエラーが発生しました。");
+      console.error("ダウンロード中にエラーが発生しました:", error);
+      setErrorMessage(error.message || "ダウンロード中にエラーが発生しました。");
       setIsDownloading(false);
     }
   };
@@ -360,6 +410,12 @@ export default function useVideoProcessing({ token, handleLogout, userInfo }) {
     if (isTokenExpired(token)) {
       alert("セッションが切れました。再ログインしてください。");
       handleLogout();
+      return;
+    }
+    
+    // ローカルホスト環境では共有機能を無効化
+    if (isLocalhost()) {
+      setShareMessage("ローカルホスト環境では共有機能は利用できません。");
       return;
     }
     

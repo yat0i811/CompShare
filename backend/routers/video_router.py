@@ -861,7 +861,33 @@ async def upload_and_compress_local_endpoint(
     if os.path.exists(temp_input): os.remove(temp_input)
     if os.path.exists(temp_output): os.remove(temp_output)
 
-    return Response(content=content, media_type="video/mp4")
+    # CORSヘッダーを明示的に追加
+    response = Response(content=content, media_type="video/mp4")
+    origin = request.headers.get("origin")
+    if origin and origin in settings.CORS_ALLOWED_ORIGINS:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "*"
+    
+    return response
+
+@router.options("/upload/")
+async def upload_options(request: Request):
+    """ローカルアップロードエンドポイントのOPTIONSリクエストハンドラー"""
+    origin = request.headers.get("origin")
+    if origin and origin in settings.CORS_ALLOWED_ORIGINS:
+        return Response(
+            status_code=200,
+            headers={
+                "Access-Control-Allow-Origin": origin,
+                "Access-Control-Allow-Credentials": "true",
+                "Access-Control-Allow-Methods": "POST, OPTIONS",
+                "Access-Control-Allow-Headers": "*",
+                "Access-Control-Max-Age": "3600",
+            }
+        )
+    return Response(status_code=200)
 
 @router.post("/share/create", summary="圧縮動画の共有リンクを作成")
 async def create_share_link(

@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import Head from 'next/head';
 import useVideoProcessing from '../hooks/useVideoProcessing';
 import useAuth from '../hooks/useAuth';
-import { IS_LOCALHOST } from '../utils/constants';
+import { IS_LOCALHOST, isLocalhost } from '../utils/constants';
 import { useRouter } from 'next/router';
 import Link from 'next/link';
 
@@ -296,9 +296,14 @@ export default function Home() {
                   <option value={7}>7日</option>
                 </select>
               </div>
-              <button onClick={createShareLink} disabled={isCreatingShare}>
-                {isCreatingShare ? "共有リンク作成中..." : "共有リンクを作成"}
+              <button onClick={createShareLink} disabled={isCreatingShare || isLocalhost()}>
+                {isCreatingShare ? "共有リンク作成中..." : isLocalhost() ? "ローカル環境では利用不可" : "共有リンクを作成"}
               </button>
+              {isLocalhost() && (
+                <p className="localhost-notice">
+                  ローカルホスト環境では共有機能は利用できません。本番環境でご利用ください。
+                </p>
+              )}
             </div>
             
             {shareUrl && (
@@ -559,6 +564,13 @@ export default function Home() {
           margin: 0;
           text-align: center;
           font-weight: 500;
+        }
+
+        .localhost-notice {
+          font-size: 0.9em;
+          color: #ff0000;
+          margin-top: 10px;
+          text-align: center;
         }
       `}</style>
     </>
