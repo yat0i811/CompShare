@@ -60,6 +60,8 @@ export default function Home() {
     }
   }, [userInfo, token]);
 
+
+
   const handleFileChange = async (event) => {
     const selectedFile = event.target.files[0];
     if (selectedFile) {
@@ -322,7 +324,7 @@ export default function Home() {
                 </div>
                 <p className="share-note">
                   この共有URLを使用すると、ログインなしで動画をダウンロードできます。
-                  有効期限: {shareExpiry}日
+                  有効期限: {shareExpiry}日（日本時間）
                 </p>
               </div>
             )}
@@ -334,6 +336,8 @@ export default function Home() {
             )}
           </div>
         )}
+
+
       </div>
 
       <style jsx>{`
@@ -572,6 +576,8 @@ export default function Home() {
           margin-top: 10px;
           text-align: center;
         }
+
+
       `}</style>
     </>
   );

@@ -23,7 +23,9 @@ const Layout = ({ children }) => {
                 <button className="hamburger-button" onClick={toggleSidebar}>
                     ☰
                 </button>
-                <span>CompShare</span>
+                <Link href="/">
+                    <button className="logo-button">CompShare</button>
+                </Link>
             </header>
 
             <div className={`sidebar ${sidebarOpen ? 'open' : ''}`}>
@@ -75,6 +77,19 @@ const Layout = ({ children }) => {
                     border: none;
                     cursor: pointer;
                 }
+                .logo-button {
+                    cursor: pointer;
+                    font-weight: bold;
+                    color: #333;
+                    background: none;
+                    border: none;
+                    font-size: 1.2em;
+                    padding: 0;
+                    margin: 0;
+                }
+                .logo-button:hover {
+                    color: #999;
+                }
                 .sidebar {
                     position: fixed;
                     top: 0;
@@ -116,10 +131,12 @@ const Layout = ({ children }) => {
                     cursor: pointer;
                     font-size: 1em;
                     color: #333;
-                    padding: 0;
+                    padding: 8px 12px;
+                    border-radius: 4px;
+                    transition: background-color 0.2s ease;
                 }
                 .sidebar nav li button:hover {
-                    color: #0070f3;
+                    background-color: #f5f5f5;
                 }
                 .sidebar nav li.logout-button-container {
                     margin-top: auto;
@@ -135,10 +152,12 @@ const Layout = ({ children }) => {
                     cursor: pointer;
                     font-size: 1em;
                     color: #333;
-                    padding: 0;
+                    padding: 8px 12px;
+                    border-radius: 4px;
+                    transition: background-color 0.2s ease;
                 }
                 .sidebar nav li.logout-button-container button:hover {
-                    color: #0070f3;
+                    background-color: #f5f5f5;
                 }
                 .sidebar nav a {
                     text-decoration: none;
