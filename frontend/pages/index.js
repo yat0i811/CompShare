@@ -324,7 +324,7 @@ export default function Home() {
                 </div>
                 <p className="share-note">
                   この共有URLを使用すると、ログインなしで動画をダウンロードできます。
-                  有効期限: {shareExpiry}日（日本時間）
+                  有効期限: {shareExpiry}日
                 </p>
               </div>
             )}
