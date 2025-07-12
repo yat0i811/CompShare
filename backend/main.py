@@ -6,7 +6,7 @@ from starlette.requests import Request as StarletteRequest
 from starlette.responses import Response as StarletteResponse
 import os, uuid, shutil, subprocess, asyncio, magic, tempfile
 from jose import jwt, JWTError
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 import boto3
 from botocore.client import Config
@@ -189,10 +189,10 @@ async def startup_event():
     """アプリケーション開始時の処理"""
     print("アプリケーションを開始しています...")
     
-    # 期限切れ動画のクリーンアップを毎日午前2時に実行
+    # 期限切れ動画のクリーンアップを毎日午前0時に実行（日本時間）
     scheduler.add_job(
         cleanup_expired_videos,
-        trigger=CronTrigger(hour=2, minute=0),  # 毎日午前2時
+        trigger=CronTrigger(hour=0, minute=0, timezone="Asia/Tokyo"),
         id="cleanup_expired_videos",
         replace_existing=True
     )

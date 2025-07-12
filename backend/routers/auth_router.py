@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Form, Request, Response
 from fastapi.responses import JSONResponse
 from jose import jwt, JWTError
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from passlib.hash import bcrypt
 
 from core.config import settings
@@ -13,7 +13,9 @@ router = APIRouter()
 
 def create_access_token(data: dict):
     to_encode = data.copy()
-    expire = datetime.utcnow() + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+    # 日本時間でトークンの有効期限を設定
+    jst = timezone(timedelta(hours=9))
+    expire = datetime.now(jst) + timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
 

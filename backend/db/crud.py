@@ -130,8 +130,10 @@ async def create_shared_video(
     expiry_date: str,
     user_id: int
 ) -> bool:
-    from datetime import datetime
-    created_at = datetime.now().isoformat()
+    from datetime import datetime, timezone, timedelta
+    # 日本時間で作成日時を設定
+    jst = timezone(timedelta(hours=9))
+    created_at = datetime.now(jst).isoformat()
     
     async with aiosqlite.connect(settings.DB_PATH) as db:
         cursor = await db.execute(
@@ -164,8 +166,10 @@ async def get_shared_videos_by_user(user_id: int):
         return [dict(video) for video in videos]
 
 async def delete_expired_shared_videos():
-    from datetime import datetime
-    current_time = datetime.now().isoformat()
+    from datetime import datetime, timezone, timedelta
+    # 日本時間で現在時刻を取得
+    jst = timezone(timedelta(hours=9))
+    current_time = datetime.now(jst).isoformat()
     
     async with aiosqlite.connect(settings.DB_PATH) as db:
         db.row_factory = aiosqlite.Row

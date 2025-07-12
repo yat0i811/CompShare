@@ -16,7 +16,7 @@ from utils.security import (
 )
 
 from jose import jwt, JWTError
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import secrets
 
 router = APIRouter()
@@ -928,8 +928,9 @@ async def create_share_link(
     # 共有トークンの生成
     share_token = secrets.token_urlsafe(32)
     
-    # 有効期限の計算
-    expiry_date = (datetime.now() + timedelta(days=expiry_days)).isoformat()
+    # 有効期限の計算（日本時間）
+    jst = timezone(timedelta(hours=9))
+    expiry_date = (datetime.now(jst) + timedelta(days=expiry_days)).isoformat()
     
     # データベースに共有情報を保存
     success = await crud.create_shared_video(
@@ -1010,9 +1011,10 @@ async def shared_video_preview_page(
     if not shared_video:
         raise HTTPException(status_code=404, detail="共有リンクが見つかりません")
     
-    # 有効期限の確認
+    # 有効期限の確認（日本時間）
+    jst = timezone(timedelta(hours=9))
     expiry_date = datetime.fromisoformat(shared_video["expiry_date"])
-    if datetime.now() > expiry_date:
+    if datetime.now(jst) > expiry_date:
         # 期限切れの場合はデータベースから削除
         await crud.delete_shared_video_by_token(share_token)
         raise HTTPException(status_code=410, detail="共有リンクの有効期限が切れています")
@@ -1205,9 +1207,10 @@ async def shared_video_preview_stream(
     if not shared_video:
         raise HTTPException(status_code=404, detail="共有リンクが見つかりません")
     
-    # 有効期限の確認
+    # 有効期限の確認（日本時間）
+    jst = timezone(timedelta(hours=9))
     expiry_date = datetime.fromisoformat(shared_video["expiry_date"])
-    if datetime.now() > expiry_date:
+    if datetime.now(jst) > expiry_date:
         await crud.delete_shared_video_by_token(share_token)
         raise HTTPException(status_code=410, detail="共有リンクの有効期限が切れています")
     
@@ -1252,9 +1255,10 @@ async def download_shared_video(
     if not shared_video:
         raise HTTPException(status_code=404, detail="共有リンクが見つかりません")
     
-    # 有効期限の確認
+    # 有効期限の確認（日本時間）
+    jst = timezone(timedelta(hours=9))
     expiry_date = datetime.fromisoformat(shared_video["expiry_date"])
-    if datetime.now() > expiry_date:
+    if datetime.now(jst) > expiry_date:
         # 期限切れの場合はデータベースから削除
         await crud.delete_shared_video_by_token(share_token)
         raise HTTPException(status_code=410, detail="共有リンクの有効期限が切れています")
@@ -1320,8 +1324,9 @@ async def get_user_shares(
     
     shared_videos = await crud.get_shared_videos_by_user(user_from_db["id"])
     
-    # 有効期限の確認と期限切れの削除
-    current_time = datetime.now()
+    # 有効期限の確認と期限切れの削除（日本時間）
+    jst = timezone(timedelta(hours=9))
+    current_time = datetime.now(jst)
     valid_shares = []
     
     for video in shared_videos:
