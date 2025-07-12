@@ -260,8 +260,13 @@ export default function Home() {
             <video src={compressedVideoUrl} controls width="100%"></video>
             <div className="video-actions">
               <button onClick={downloadCompressedVideo} disabled={isDownloading}>
-                {isDownloading ? "ダウンロード中..." : "ダウンロード"}
+                {isDownloading ? "ダウンロード準備中..." : "ダウンロード"}
               </button>
+              {isDownloading && (
+                <p className="download-note">
+                  ダウンロードリンクを生成中...
+                </p>
+              )}
             </div>
           </div>
         )}
@@ -530,8 +535,17 @@ export default function Home() {
         
         .video-actions {
           display: flex;
+          flex-direction: column;
           gap: 10px;
           margin-top: 15px;
+        }
+        
+        .download-note {
+          font-size: 0.9rem;
+          color: #0070f3;
+          margin: 0;
+          text-align: center;
+          font-weight: 500;
         }
       `}</style>
     </>

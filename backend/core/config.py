@@ -16,7 +16,8 @@ class Settings(BaseSettings):
     # R2関連のタイムアウト設定（秒）
     R2_UPLOAD_URL_EXPIRE_SECONDS: int = 7200  # 2時間
     R2_DOWNLOAD_URL_EXPIRE_SECONDS: int = 7200  # 2時間
-    R2_FILE_DELETE_DELAY_SECONDS: int = 1800  # 30分（削除前の待機時間）
+    R2_DIRECT_DOWNLOAD_URL_EXPIRE_SECONDS: int = 300  # 5分
+    R2_FILE_DELETE_DELAY_SECONDS: int = 1800  # 30分
     
     DB_PATH: str = "db_data/users.db"
     ADMIN_USERNAME: str

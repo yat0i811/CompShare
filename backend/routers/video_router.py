@@ -1121,7 +1121,7 @@ async def shared_video_preview_page(
     </head>
     <body>
         <div class="container">
-            <h1>📹 動画共有</h1>
+            <h1>CompShare</h1>
             
             <div class="video-info">
                 <div class="info-item">
@@ -1151,7 +1151,7 @@ async def shared_video_preview_page(
             
             <div class="download-section">
                 <a href="{request.url.scheme}://{request.url.netloc}/share/{share_token}/download" class="download-btn">
-                    ⬇️ ダウンロード
+                    ダウンロード
                 </a>
             </div>
             
@@ -1490,3 +1490,94 @@ async def check_compression_status_endpoint(
                 details=f"Error checking compression status for {sanitized_filename}: {str(e)}"
             )
             raise HTTPException(status_code=500, detail="圧縮状態の確認中にエラーが発生しました") 
+
+@router.get("/get-download-url/{filename}", summary="直接ダウンロードURL取得")
+async def get_direct_download_url_endpoint(
+    request: Request,
+    filename: str,
+    current_user: dict = Depends(get_current_user_from_token)
+):
+    """圧縮された動画の直接ダウンロードURLを生成するエンドポイント"""
+    print(f"=== 直接ダウンロードURL生成開始 ===")
+    print(f"Filename: {filename}")
+    print(f"User: {current_user['sub']}")
+    
+    # ファイル名の検証とサニタイゼーション
+    if not validate_filename(filename):
+        print(f"無効なファイル名: {filename}")
+        log_security_violation(
+            request=request,
+            user=current_user["sub"],
+            violation_type="INVALID_FILENAME",
+            details=f"Invalid filename in direct download URL: {filename}"
+        )
+        raise HTTPException(status_code=400, detail="無効なファイル名です")
+    
+    sanitized_filename = sanitize_filename(filename)
+    compressed_key = f"compressed/{sanitized_filename}"
+    print(f"Sanitized filename: {sanitized_filename}")
+    print(f"R2 key: {compressed_key}")
+    
+    try:
+        # ファイルの存在確認
+        print("R2でファイル存在確認中...")
+        try:
+            head_response = r2_client.head_object(Bucket=settings.R2_BUCKET_NAME, Key=compressed_key)
+            print(f"ファイル存在確認成功: {head_response}")
+        except Exception as head_error:
+            print(f"ファイル存在確認エラー: {head_error}")
+            if hasattr(head_error, 'response') and head_error.response.get('Error', {}).get('Code') == 'NoSuchKey':
+                log_security_violation(
+                    request=request,
+                    user=current_user["sub"],
+                    violation_type="FILE_NOT_FOUND",
+                    details=f"File not found in direct download URL: {sanitized_filename}"
+                )
+                raise HTTPException(status_code=404, detail="圧縮されたファイルが見つかりません。圧縮処理が完了していない可能性があります。")
+            else:
+                raise head_error
+        
+        # R2から署名付きURLを生成
+        print("R2から署名付きURL生成中...")
+        download_url = r2_client.generate_presigned_url(
+            'get_object',
+            Params={
+                'Bucket': settings.R2_BUCKET_NAME, 
+                'Key': compressed_key,
+                'ResponseContentDisposition': f'attachment; filename="{sanitized_filename}"'
+            },
+            ExpiresIn=settings.R2_DIRECT_DOWNLOAD_URL_EXPIRE_SECONDS
+        )
+        print(f"署名付きURL生成完了: {download_url[:50]}...")
+        
+        # 成功ログ
+        log_security_event(
+            event_type="DIRECT_DOWNLOAD_URL_GENERATED",
+            user=current_user["sub"],
+            ip_address=get_client_ip(request),
+            details=f"Generated direct download URL for: {sanitized_filename}"
+        )
+        
+        print("=== 直接ダウンロードURL生成正常終了 ===")
+        return {
+            "download_url": download_url,
+            "filename": sanitized_filename,
+            "expires_in": settings.R2_DIRECT_DOWNLOAD_URL_EXPIRE_SECONDS,
+            "size": head_response.get('ContentLength', 0)
+        }
+        
+    except HTTPException:
+        # 既にHTTPExceptionが発生している場合は再送出
+        print("HTTPException再送出")
+        raise
+    except Exception as e:
+        print(f"予期しないエラー: {type(e).__name__}: {str(e)}")
+        import traceback
+        print(f"トレースバック: {traceback.format_exc()}")
+        log_security_violation(
+            request=request,
+            user=current_user["sub"],
+            violation_type="DIRECT_DOWNLOAD_URL_ERROR",
+            details=f"Direct download URL error for {sanitized_filename}: {str(e)}"
+        )
+        raise HTTPException(status_code=500, detail=f"直接ダウンロードURLの生成中にエラーが発生しました: {str(e)}") 

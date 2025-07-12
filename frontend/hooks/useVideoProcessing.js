@@ -5,6 +5,7 @@ import {
     GET_UPLOAD_URL_ENDPOINT, 
     COMPRESS_URL_ENDPOINT,
     DOWNLOAD_URL_ENDPOINT,
+    GET_DIRECT_DOWNLOAD_URL_ENDPOINT,
     WS_URL_BASE,
     isLocalhost,
     isTokenExpired,
@@ -290,38 +291,34 @@ export default function useVideoProcessing({ token, handleLogout, userInfo }) {
         return;
       }
 
-      // ダウンロードURLを構築
-      const downloadUrl = `${DOWNLOAD_URL_ENDPOINT}${encodeURIComponent(compressedFileName)}`;
-      
-      // 認証トークン付きでダウンロード
-      const downloadResponse = await fetch(downloadUrl, {
+      // 直接ダウンロードURLを取得
+      const urlResponse = await fetch(`${GET_DIRECT_DOWNLOAD_URL_ENDPOINT}${encodeURIComponent(compressedFileName)}`, {
         headers: { 
           Authorization: `Bearer ${token}` 
         }
       });
 
-      if (!downloadResponse.ok) {
-        if (downloadResponse.status === 404) {
+      if (!urlResponse.ok) {
+        if (urlResponse.status === 404) {
           throw new Error("ファイルが見つかりません。圧縮処理が完了していない可能性があります。");
-        } else if (downloadResponse.status === 401) {
+        } else if (urlResponse.status === 401) {
           throw new Error("認証エラーです。再ログインしてください。");
         } else {
-          throw new Error(`ダウンロードエラー (${downloadResponse.status})`);
+          throw new Error(`ダウンロードURL取得エラー (${urlResponse.status})`);
         }
       }
 
-      const blob = await downloadResponse.blob();
+      const urlData = await urlResponse.json();
       
-      // Create a blob URL
-      const blobUrl = URL.createObjectURL(blob);
+      // 直接ダウンロードリンクを作成してクリック
       const a = document.createElement("a");
-      a.href = blobUrl;
+      a.href = urlData.download_url;
       a.download = compressedFileName;
+      a.target = "_blank"; // 新しいタブで開く（オプション）
       document.body.appendChild(a);
       a.click();
-      // Clean up by revoking the blob URL and removing the link
       document.body.removeChild(a);
-      URL.revokeObjectURL(blobUrl);
+      
       setIsDownloading(false);
       
     } catch (error) {
