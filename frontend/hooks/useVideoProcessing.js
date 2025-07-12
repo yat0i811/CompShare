@@ -7,7 +7,10 @@ import {
     DOWNLOAD_URL_ENDPOINT,
     WS_URL_BASE,
     isLocalhost,
-    isTokenExpired
+    isTokenExpired,
+    CREATE_SHARE_URL,
+    GET_SHARES_URL,
+    PUBLIC_DOWNLOAD_URL
 } from '../utils/constants';
 
 // Custom hook for video processing logic
@@ -31,6 +34,13 @@ export default function useVideoProcessing({ token, handleLogout, userInfo }) {
   const [modifiedFile, setModifiedFile] = useState(null);
   const [modifiedVideoUrl, setModifiedVideoUrl] = useState("");
   const [useGPU, setUseGPU] = useState(true);
+  
+  // 共有機能の状態
+  const [compressedR2Key, setCompressedR2Key] = useState("");
+  const [shareUrl, setShareUrl] = useState("");
+  const [shareExpiry, setShareExpiry] = useState(3); // デフォルト3日
+  const [isCreatingShare, setIsCreatingShare] = useState(false);
+  const [shareMessage, setShareMessage] = useState("");
 
   const ws = useRef(null);
 
@@ -57,6 +67,7 @@ export default function useVideoProcessing({ token, handleLogout, userInfo }) {
           setCompressedVideoUrl(data.url);
           setCompressedFileName(data.filename);
           setCompressedFileSize(data.size || 0);
+          setCompressedR2Key(data.r2_key || ""); // R2キーを保存
           setProgress(100);
           setIsUploading(false);
           setErrorMessage("");
@@ -156,8 +167,7 @@ export default function useVideoProcessing({ token, handleLogout, userInfo }) {
     setIsUploading(true);
     setErrorMessage("");
     setProgress(0);
-    setCompressedVideoUrl("");
-    setCompressedFileSize(0);
+    resetStates(); // 共有関連の状態をリセット
     setOriginalVideoUrl(URL.createObjectURL(file));
     setOriginalFileSize(file.size);
 
@@ -321,6 +331,76 @@ export default function useVideoProcessing({ token, handleLogout, userInfo }) {
     }
   };
 
+  // 共有リンクの作成
+  const createShareLink = async () => {
+    if (!compressedFileName || !compressedR2Key || !token || isCreatingShare) return;
+    
+    if (isTokenExpired(token)) {
+      alert("セッションが切れました。再ログインしてください。");
+      handleLogout();
+      return;
+    }
+    
+    setIsCreatingShare(true);
+    setShareMessage("");
+    setShareUrl("");
+    
+    try {
+      const formData = new FormData();
+      formData.append("compressed_filename", compressedFileName);
+      formData.append("r2_key", compressedR2Key);
+      formData.append("expiry_days", shareExpiry);
+      
+      const response = await fetch(CREATE_SHARE_URL, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+        body: formData,
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ detail: "共有リンクの作成に失敗しました。" }));
+        setShareMessage(errorData.detail || "共有リンクの作成に失敗しました。");
+        setIsCreatingShare(false);
+        return;
+      }
+      
+      const data = await response.json();
+      setShareUrl(data.share_url);
+      setShareMessage(`共有リンクを作成しました（有効期限: ${shareExpiry}日）`);
+      
+    } catch (error) {
+      console.error("Share creation error:", error);
+      setShareMessage(`共有リンクの作成エラー: ${error.message}`);
+    } finally {
+      setIsCreatingShare(false);
+    }
+  };
+
+  // 共有URLをクリップボードにコピー
+  const copyShareUrl = () => {
+    if (!shareUrl) return;
+    
+    navigator.clipboard.writeText(shareUrl).then(() => {
+      setShareMessage("共有URLをクリップボードにコピーしました！");
+      setTimeout(() => setShareMessage(""), 3000);
+    }).catch(err => {
+      console.error("Failed to copy: ", err);
+      setShareMessage("クリップボードへのコピーに失敗しました。");
+    });
+  };
+
+  // 状態をリセット（新しいアップロード時）
+  const resetStates = () => {
+    setCompressedVideoUrl("");
+    setCompressedFileName("");
+    setCompressedFileSize(0);
+    setCompressedR2Key("");
+    setShareUrl("");
+    setShareMessage("");
+    setProgress(0);
+    setErrorMessage("");
+  };
+
   return {
     file, setFile,
     originalVideoUrl, setOriginalVideoUrl,
@@ -345,6 +425,15 @@ export default function useVideoProcessing({ token, handleLogout, userInfo }) {
     formatSize,
     estimateCompressedSize,
     getVideoDimensions,
+    // 共有機能
+    compressedR2Key,
+    shareUrl,
+    shareExpiry, setShareExpiry,
+    isCreatingShare,
+    shareMessage,
+    createShareLink,
+    copyShareUrl,
+    resetStates,
     // MAX_FILE_SIZE,
   };
 }

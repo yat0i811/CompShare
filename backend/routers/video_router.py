@@ -2,7 +2,7 @@ from fastapi import (
     APIRouter, WebSocket, WebSocketDisconnect, HTTPException, Response, 
     Request, Depends, BackgroundTasks, File, Form, UploadFile, Query
 )
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse, HTMLResponse
 import os, uuid, shutil, subprocess, asyncio, magic, tempfile, time, json
 from typing import Dict, Optional, List
 
@@ -16,21 +16,21 @@ from utils.security import (
 )
 
 from jose import jwt, JWTError
+from datetime import datetime, timedelta
+import secrets
 
 router = APIRouter()
 
 clients: Dict[str, WebSocket] = {}
 
-def create_r2_client():
-    return boto3.client(
-        's3',
-        endpoint_url=settings.R2_ENDPOINT_URL,
-        aws_access_key_id=settings.R2_ACCESS_KEY_ID,
-        aws_secret_access_key=settings.R2_SECRET_ACCESS_KEY,
-        config=boto3.session.Config(signature_version="s3v4"),
-        region_name="auto"
-    )
-r2_client = create_r2_client()
+# R2クライアントはmain.pyで一元管理
+# グローバル変数として参照
+r2_client = None
+
+def init_r2_client(client):
+    """main.pyから呼び出されてR2クライアントを設定する"""
+    global r2_client
+    r2_client = client
 
 def get_video_duration(filepath: str) -> float:
     command = [
@@ -95,7 +95,8 @@ async def run_ffmpeg_process(
             # GPUエンコーダーが利用できない場合のフォールバック
             if ("h264_nvenc" in error_message and 
                 ("not found" in error_message or "No such encoder" in error_message or 
-                 "Cannot load libcuda.so.1" in error_message or "Error initializing output stream" in error_message)):
+                 "Cannot load libcuda.so.1" in error_message or "Error initializing output stream" in error_message or
+                 "Invalid Level" in error_message or "InitializeEncoder failed" in error_message)):
                 
                 if client_id in clients:
                     try:
@@ -184,6 +185,28 @@ def is_gpu_encoder_available() -> bool:
             for line in result.stdout.split('\n'):
                 if 'nvenc' in line.lower():
                     print(f"  {line.strip()}")
+        
+        # NVENCエンコーダーが存在する場合、実際に動作するかテスト
+        if has_nvenc:
+            try:
+                # 簡単なテスト用のコマンドを実行
+                test_result = subprocess.run(
+                    ["ffmpeg", "-f", "lavfi", "-i", "testsrc=duration=1:size=320x240:rate=1", 
+                     "-c:v", "h264_nvenc", "-preset", "fast", "-t", "1", "-f", "null", "-"],
+                    capture_output=True,
+                    text=True,
+                    timeout=30
+                )
+                # エラーが発生した場合は利用不可とみなす
+                if test_result.returncode != 0:
+                    print(f"NVENC encoder test failed: {test_result.stderr}")
+                    return False
+                print("NVENC encoder test successful")
+                return True
+            except Exception as e:
+                print(f"NVENC encoder test error: {e}")
+                return False
+        
         return has_nvenc
     except Exception as e:
         print(f"Error checking NVENC encoder: {e}")
@@ -311,7 +334,7 @@ def build_ffmpeg_options(crf: int, bitrate: float, resolution: str, width: Optio
         bufsize = f"{bitrate * 2}M"  # バッファサイズはビットレートの2倍
         
         # FFmpeg 4.4.2対応のNVENCオプション（ビットレート制御）
-        # 4K以上の場合は-levelオプションを付けない
+        # NVENCエンコーダーでは-levelパラメータを指定しない（サポートされていないため）
         ffmpeg_options = [
             "-vcodec", "h264_nvenc",
             "-preset", "medium",       # 圧縮効率重視のプリセット
@@ -326,9 +349,6 @@ def build_ffmpeg_options(crf: int, bitrate: float, resolution: str, width: Optio
             "-refs", "3",              # 参照フレーム数
             "-sc_threshold", "0",      # シーンチェンジ検出無効化（圧縮効率向上）
         ]
-        # 4K未満の場合のみ-levelを付与
-        if not (input_file and get_video_resolution(input_file)[0] >= 3840 or get_video_resolution(input_file)[1] >= 2160):
-            ffmpeg_options.extend(["-level", appropriate_level])
         # 新しいFFmpegバージョンでのみ使用可能なオプション
         if is_modern_ffmpeg:
             ffmpeg_options.extend([
@@ -537,7 +557,8 @@ async def run_ffmpeg_job_r2(
             print(f"WebSocket通知送信中... URL: {url[:50]}...")
             await clients[client_id].send_text(json.dumps({
                 "type": "done", "url": url,
-                "filename": compressed_filename, "size": file_size
+                "filename": compressed_filename, "size": file_size,
+                "r2_key": compressed_key  # 共有機能のためにR2キーを追加
             }))
             print("WebSocket通知送信完了")
             
@@ -841,6 +862,451 @@ async def upload_and_compress_local_endpoint(
     if os.path.exists(temp_output): os.remove(temp_output)
 
     return Response(content=content, media_type="video/mp4")
+
+@router.post("/share/create", summary="圧縮動画の共有リンクを作成")
+async def create_share_link(
+    request: Request,
+    compressed_filename: str = Form(...),
+    r2_key: str = Form(...),
+    expiry_days: int = Form(...),
+    current_user: dict = Depends(get_current_user_from_token)
+):
+    # 有効期限日数の検証
+    if expiry_days not in [1, 3, 7]:
+        raise HTTPException(status_code=400, detail="有効期限は1日、3日、7日のいずれかである必要があります")
+    
+    # ファイル名の検証
+    if not validate_filename(compressed_filename):
+        log_security_violation(
+            request=request,
+            user=current_user["sub"],
+            violation_type="INVALID_FILENAME",
+            details=f"Invalid filename in share creation: {compressed_filename}"
+        )
+        raise HTTPException(status_code=400, detail="無効なファイル名です")
+    
+    # ユーザー情報の取得
+    user_from_db = await crud.get_user_by_username(current_user["sub"])
+    if not user_from_db:
+        raise HTTPException(status_code=404, detail="ユーザーが見つかりません")
+    
+    # R2でファイルの存在確認
+    try:
+        r2_client.head_object(Bucket=settings.R2_BUCKET_NAME, Key=r2_key)
+    except Exception as e:
+        if hasattr(e, 'response') and e.response.get('Error', {}).get('Code') == '404':
+            raise HTTPException(status_code=404, detail="圧縮動画が見つかりません")
+        else:
+            raise HTTPException(status_code=500, detail="ファイルの確認に失敗しました")
+    
+    # 共有トークンの生成
+    share_token = secrets.token_urlsafe(32)
+    
+    # 有効期限の計算
+    expiry_date = (datetime.now() + timedelta(days=expiry_days)).isoformat()
+    
+    # データベースに共有情報を保存
+    success = await crud.create_shared_video(
+        original_filename=compressed_filename.replace("_compressed", ""),
+        compressed_filename=compressed_filename,
+        r2_key=r2_key,
+        share_token=share_token,
+        expiry_date=expiry_date,
+        user_id=user_from_db["id"]
+    )
+    
+    if not success:
+        raise HTTPException(status_code=500, detail="共有リンクの作成に失敗しました")
+    
+    # 共有URLの生成
+    share_url = f"{request.url.scheme}://{request.url.netloc}/share/{share_token}"
+    
+    log_security_event(
+        event_type="SHARE_LINK_CREATED",
+        user=current_user["sub"],
+        ip_address=get_client_ip(request),
+        details=f"Created share link for file: {compressed_filename}, expires in {expiry_days} days"
+    )
+    
+    return JSONResponse(content={
+        "share_url": share_url,
+        "share_token": share_token,
+        "expiry_date": expiry_date,
+        "expiry_days": expiry_days
+    })
+
+@router.options("/share/{share_token}")
+async def share_options(share_token: str, request: Request):
+    """共有エンドポイントのOPTIONSリクエストハンドラー"""
+    return Response(
+        status_code=200,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, OPTIONS",
+            "Access-Control-Allow-Headers": "*",
+            "Access-Control-Max-Age": "3600",
+        }
+    )
+
+@router.options("/share/{share_token}/preview")
+async def share_preview_options(share_token: str, request: Request):
+    """共有プレビューエンドポイントのOPTIONSリクエストハンドラー"""
+    return Response(
+        status_code=200,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, OPTIONS",
+            "Access-Control-Allow-Headers": "*",
+            "Access-Control-Max-Age": "3600",
+        }
+    )
+
+@router.options("/share/{share_token}/download")
+async def share_download_options(share_token: str, request: Request):
+    """共有ダウンロードエンドポイントのOPTIONSリクエストハンドラー"""
+    return Response(
+        status_code=200,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, OPTIONS",
+            "Access-Control-Allow-Headers": "*",
+            "Access-Control-Max-Age": "3600",
+        }
+    )
+
+@router.get("/share/{share_token}", summary="共有動画のプレビューページ（認証不要）")
+async def shared_video_preview_page(
+    share_token: str,
+    request: Request
+):
+    # 共有動画情報の取得
+    shared_video = await crud.get_shared_video_by_token(share_token)
+    if not shared_video:
+        raise HTTPException(status_code=404, detail="共有リンクが見つかりません")
+    
+    # 有効期限の確認
+    expiry_date = datetime.fromisoformat(shared_video["expiry_date"])
+    if datetime.now() > expiry_date:
+        # 期限切れの場合はデータベースから削除
+        await crud.delete_shared_video_by_token(share_token)
+        raise HTTPException(status_code=410, detail="共有リンクの有効期限が切れています")
+    
+    # R2でファイルサイズの取得
+    try:
+        response = r2_client.head_object(Bucket=settings.R2_BUCKET_NAME, Key=shared_video["r2_key"])
+        file_size = response.get('ContentLength', 0)
+    except Exception as e:
+        if hasattr(e, 'response') and e.response.get('Error', {}).get('Code') == '404':
+            await crud.delete_shared_video_by_token(share_token)
+            raise HTTPException(status_code=404, detail="共有ファイルが見つかりません")
+        else:
+            file_size = 0
+    
+    # ファイルサイズを読みやすい形式に変換
+    def format_file_size(size_bytes):
+        if size_bytes == 0:
+            return "不明"
+        elif size_bytes < 1024 * 1024:
+            return f"{size_bytes / 1024:.1f} KB"
+        elif size_bytes < 1024 * 1024 * 1024:
+            return f"{size_bytes / (1024 * 1024):.1f} MB"
+        else:
+            return f"{size_bytes / (1024 * 1024 * 1024):.1f} GB"
+    
+    formatted_size = format_file_size(file_size)
+    
+    # 有効期限を日本語形式に変換
+    import locale
+    try:
+        expiry_str = expiry_date.strftime("%Y年%m月%d日 %H:%M")
+    except:
+        expiry_str = expiry_date.strftime("%Y-%m-%d %H:%M")
+    
+    # HTMLページの生成
+    html_content = f"""
+    <!DOCTYPE html>
+    <html lang="ja">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>動画共有 - {shared_video['compressed_filename']}</title>
+        <style>
+            body {{
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                max-width: 800px;
+                margin: 0 auto;
+                padding: 20px;
+                background-color: #f5f5f5;
+                line-height: 1.6;
+            }}
+            .container {{
+                background: white;
+                border-radius: 8px;
+                padding: 30px;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            }}
+            h1 {{
+                color: #333;
+                text-align: center;
+                margin-bottom: 30px;
+                border-bottom: 2px solid #007bff;
+                padding-bottom: 10px;
+            }}
+            .video-info {{
+                background: #f8f9fa;
+                border-radius: 6px;
+                padding: 20px;
+                margin: 20px 0;
+            }}
+            .info-item {{
+                display: flex;
+                justify-content: space-between;
+                margin: 10px 0;
+                padding: 8px 0;
+                border-bottom: 1px solid #dee2e6;
+            }}
+            .info-item:last-child {{
+                border-bottom: none;
+            }}
+            .info-label {{
+                font-weight: bold;
+                color: #495057;
+            }}
+            .info-value {{
+                color: #6c757d;
+            }}
+            .video-container {{
+                text-align: center;
+                margin: 30px 0;
+            }}
+            video {{
+                max-width: 100%;
+                border-radius: 8px;
+                box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+            }}
+            .download-section {{
+                text-align: center;
+                margin: 30px 0;
+            }}
+            .download-btn {{
+                background: #007bff;
+                color: white;
+                padding: 12px 30px;
+                border: none;
+                border-radius: 6px;
+                font-size: 16px;
+                cursor: pointer;
+                text-decoration: none;
+                display: inline-block;
+                transition: background-color 0.3s ease;
+            }}
+            .download-btn:hover {{
+                background: #0056b3;
+            }}
+            .expiry-notice {{
+                background: #fff3cd;
+                border: 1px solid #ffeaa7;
+                border-radius: 6px;
+                padding: 15px;
+                margin: 20px 0;
+                color: #856404;
+            }}
+            .footer {{
+                text-align: center;
+                margin-top: 40px;
+                color: #6c757d;
+                font-size: 14px;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>📹 動画共有</h1>
+            
+            <div class="video-info">
+                <div class="info-item">
+                    <span class="info-label">ファイル名:</span>
+                    <span class="info-value">{shared_video['compressed_filename']}</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">ファイルサイズ:</span>
+                    <span class="info-value">{formatted_size}</span>
+                </div>
+                <div class="info-item">
+                    <span class="info-label">有効期限:</span>
+                    <span class="info-value">{expiry_str}</span>
+                </div>
+            </div>
+            
+            <div class="expiry-notice">
+                ⚠️ この共有リンクは有効期限があります。期限を過ぎるとアクセスできなくなります。
+            </div>
+            
+            <div class="video-container">
+                <video controls preload="metadata">
+                    <source src="{request.url.scheme}://{request.url.netloc}/share/{share_token}/preview" type="video/mp4">
+                    お使いのブラウザは動画の再生をサポートしていません。
+                </video>
+            </div>
+            
+            <div class="download-section">
+                <a href="{request.url.scheme}://{request.url.netloc}/share/{share_token}/download" class="download-btn">
+                    ⬇️ ダウンロード
+                </a>
+            </div>
+            
+            <div class="footer">
+                CompShare - 動画圧縮・共有サービス
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+    
+    return HTMLResponse(content=html_content)
+
+@router.get("/share/{share_token}/preview", summary="共有動画のプレビューストリーミング（認証不要）")
+async def shared_video_preview_stream(
+    share_token: str,
+    request: Request
+):
+    # R2クライアントの初期化チェック
+    if r2_client is None:
+        raise HTTPException(status_code=500, detail="ストレージクライアントが初期化されていません")
+    
+    # 共有動画情報の取得
+    shared_video = await crud.get_shared_video_by_token(share_token)
+    if not shared_video:
+        raise HTTPException(status_code=404, detail="共有リンクが見つかりません")
+    
+    # 有効期限の確認
+    expiry_date = datetime.fromisoformat(shared_video["expiry_date"])
+    if datetime.now() > expiry_date:
+        await crud.delete_shared_video_by_token(share_token)
+        raise HTTPException(status_code=410, detail="共有リンクの有効期限が切れています")
+    
+    # R2から動画ファイルをストリーミングで取得
+    try:
+        response = r2_client.get_object(Bucket=settings.R2_BUCKET_NAME, Key=shared_video["r2_key"])
+        
+        def generate():
+            try:
+                for chunk in response['Body'].iter_chunks(chunk_size=8192):
+                    yield chunk
+            except Exception as e:
+                print(f"Streaming error: {e}")
+        
+        return StreamingResponse(
+            generate(),
+            media_type="video/mp4",
+            headers={
+                "Accept-Ranges": "bytes",
+                "Cache-Control": "no-cache",
+            }
+        )
+    except Exception as e:
+        if hasattr(e, 'response') and e.response.get('Error', {}).get('Code') == '404':
+            await crud.delete_shared_video_by_token(share_token)
+            raise HTTPException(status_code=404, detail="共有ファイルが見つかりません")
+        else:
+            print(f"R2 get_object error: {e}")
+            raise HTTPException(status_code=500, detail=f"プレビューの取得に失敗しました: {str(e)}")
+
+@router.get("/share/{share_token}/download", summary="共有動画のダウンロード（認証不要）")
+async def download_shared_video(
+    share_token: str,
+    request: Request
+):
+    # R2クライアントの初期化チェック
+    if r2_client is None:
+        raise HTTPException(status_code=500, detail="ストレージクライアントが初期化されていません")
+    
+    # 共有動画情報の取得
+    shared_video = await crud.get_shared_video_by_token(share_token)
+    if not shared_video:
+        raise HTTPException(status_code=404, detail="共有リンクが見つかりません")
+    
+    # 有効期限の確認
+    expiry_date = datetime.fromisoformat(shared_video["expiry_date"])
+    if datetime.now() > expiry_date:
+        # 期限切れの場合はデータベースから削除
+        await crud.delete_shared_video_by_token(share_token)
+        raise HTTPException(status_code=410, detail="共有リンクの有効期限が切れています")
+    
+    # R2から動画ファイルの取得
+    try:
+        response = r2_client.get_object(Bucket=settings.R2_BUCKET_NAME, Key=shared_video["r2_key"])
+        content = response['Body'].read()
+        
+        log_security_event(
+            event_type="SHARED_VIDEO_DOWNLOADED",
+            user="anonymous",
+            ip_address=get_client_ip(request),
+            details=f"Downloaded shared video: {shared_video['compressed_filename']}, token: {share_token}"
+        )
+        
+        # 日本語ファイル名対応のContent-Dispositionヘッダー
+        import urllib.parse
+        import re
+        
+        filename = shared_video['compressed_filename']
+        
+        # ASCIIセーフなファイル名を生成
+        ascii_filename = re.sub(r'[^\x00-\x7F]+', '_', filename)
+        if not ascii_filename or ascii_filename.replace('_', '').replace('.', '') == '':
+            # 全て非ASCII文字の場合のフォールバック
+            ascii_filename = "compressed_video.mp4"
+        
+        # RFC 5987準拠のエンコーディング
+        encoded_filename = urllib.parse.quote(filename, safe='')
+        
+        # Content-Dispositionヘッダーを適切に構築
+        content_disposition = f"attachment; filename=\"{ascii_filename}\"; filename*=UTF-8''{encoded_filename}"
+        
+        headers = {
+            "Content-Disposition": content_disposition,
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, OPTIONS",
+            "Access-Control-Allow-Headers": "*",
+        }
+        
+        return Response(
+            content=content,
+            media_type="video/mp4",
+            headers=headers
+        )
+    except Exception as e:
+        if hasattr(e, 'response') and e.response.get('Error', {}).get('Code') == '404':
+            # R2にファイルが存在しない場合は共有情報も削除
+            await crud.delete_shared_video_by_token(share_token)
+            raise HTTPException(status_code=404, detail="共有ファイルが見つかりません")
+        else:
+            print(f"R2 get_object error: {e}")
+            raise HTTPException(status_code=500, detail=f"ファイルのダウンロードに失敗しました: {str(e)}")
+
+@router.get("/shares", summary="ユーザーの共有動画一覧を取得")
+async def get_user_shares(
+    current_user: dict = Depends(get_current_user_from_token)
+):
+    user_from_db = await crud.get_user_by_username(current_user["sub"])
+    if not user_from_db:
+        raise HTTPException(status_code=404, detail="ユーザーが見つかりません")
+    
+    shared_videos = await crud.get_shared_videos_by_user(user_from_db["id"])
+    
+    # 有効期限の確認と期限切れの削除
+    current_time = datetime.now()
+    valid_shares = []
+    
+    for video in shared_videos:
+        expiry_date = datetime.fromisoformat(video["expiry_date"])
+        if current_time > expiry_date:
+            # 期限切れの場合は削除
+            await crud.delete_shared_video_by_token(video["share_token"])
+        else:
+            valid_shares.append(video)
+    
+    return JSONResponse(content={"shares": valid_shares})
 
 @router.get("/download/{filename}", summary="圧縮された動画のダウンロード")
 async def download_compressed_video_endpoint(

@@ -32,6 +32,15 @@ export default function Home() {
     estimateCompressedSize,
     getVideoDimensions,
     useGPU, setUseGPU,
+    // 共有機能
+    compressedR2Key,
+    shareUrl,
+    shareExpiry, setShareExpiry,
+    isCreatingShare,
+    shareMessage,
+    createShareLink,
+    copyShareUrl,
+    resetStates,
   } = useVideoProcessing({ token, handleLogout, userInfo });
 
   const [userUploadCapacity, setUserUploadCapacity] = useState(null);
@@ -249,9 +258,57 @@ export default function Home() {
             <h3>圧縮完了</h3>
             <h2>圧縮後動画 ({formatSize(compressedFileSize)})</h2>
             <video src={compressedVideoUrl} controls width="100%"></video>
-            <button onClick={downloadCompressedVideo} disabled={isDownloading}>
-              {isDownloading ? "ダウンロード中..." : "ダウンロード"}
-            </button>
+            <div className="video-actions">
+              <button onClick={downloadCompressedVideo} disabled={isDownloading}>
+                {isDownloading ? "ダウンロード中..." : "ダウンロード"}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {compressedVideoUrl && compressedR2Key && (
+          <div className="card">
+            <h3>共有機能</h3>
+            <div className="share-controls">
+              <div className="control">
+                <label>有効期限:</label>
+                <select value={shareExpiry} onChange={(e) => setShareExpiry(parseInt(e.target.value))}>
+                  <option value={1}>1日</option>
+                  <option value={3}>3日</option>
+                  <option value={7}>7日</option>
+                </select>
+              </div>
+              <button onClick={createShareLink} disabled={isCreatingShare}>
+                {isCreatingShare ? "共有リンク作成中..." : "共有リンクを作成"}
+              </button>
+            </div>
+            
+            {shareUrl && (
+              <div className="share-result">
+                <h4>共有URL:</h4>
+                <div className="share-url-container">
+                  <input 
+                    type="text" 
+                    value={shareUrl} 
+                    readOnly 
+                    className="share-url-input"
+                  />
+                  <button onClick={copyShareUrl} className="copy-button">
+                    コピー
+                  </button>
+                </div>
+                <p className="share-note">
+                  この共有URLを使用すると、ログインなしで動画をダウンロードできます。
+                  有効期限: {shareExpiry}日
+                </p>
+              </div>
+            )}
+            
+            {shareMessage && (
+              <div className={`share-message ${shareMessage.includes('エラー') ? 'error' : 'success'}`}>
+                {shareMessage}
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -374,6 +431,107 @@ export default function Home() {
           display: flex;
           align-items: center;
           gap: 10px;
+        }
+        
+        /* 共有機能のスタイル */
+        .share-controls {
+          display: flex;
+          flex-direction: column;
+          gap: 15px;
+          margin-bottom: 20px;
+        }
+        
+        .share-controls .control {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+        }
+        
+        .share-controls .control label {
+          margin-bottom: 0;
+          min-width: 80px;
+        }
+        
+        .share-controls .control select {
+          width: 120px;
+          margin-bottom: 0;
+        }
+        
+        .share-result {
+          margin-top: 20px;
+          padding: 15px;
+          background-color: #f8f9fa;
+          border-radius: 8px;
+          border: 1px solid #dee2e6;
+        }
+        
+        .share-result h4 {
+          margin-top: 0;
+          margin-bottom: 10px;
+          color: #333;
+        }
+        
+        .share-url-container {
+          display: flex;
+          gap: 10px;
+          margin-bottom: 10px;
+        }
+        
+        .share-url-input {
+          flex: 1;
+          padding: 8px;
+          border: 1px solid #ccc;
+          border-radius: 4px;
+          font-size: 0.9rem;
+          font-family: monospace;
+          background-color: #f8f9fa;
+        }
+        
+        .copy-button {
+          padding: 8px 16px;
+          background-color: #6c757d;
+          color: white;
+          border: none;
+          border-radius: 4px;
+          cursor: pointer;
+          font-size: 0.9rem;
+          white-space: nowrap;
+        }
+        
+        .copy-button:hover {
+          background-color: #5a6268;
+        }
+        
+        .share-note {
+          font-size: 0.9rem;
+          color: #666;
+          margin: 0;
+          line-height: 1.4;
+        }
+        
+        .share-message {
+          margin-top: 15px;
+          padding: 10px;
+          border-radius: 4px;
+          font-size: 0.9rem;
+        }
+        
+        .share-message.success {
+          background-color: #d4edda;
+          color: #155724;
+          border: 1px solid #c3e6cb;
+        }
+        
+        .share-message.error {
+          background-color: #f8d7da;
+          color: #721c24;
+          border: 1px solid #f5c6cb;
+        }
+        
+        .video-actions {
+          display: flex;
+          gap: 10px;
+          margin-top: 15px;
         }
       `}</style>
     </>

@@ -12,6 +12,9 @@ export const DOWNLOAD_URL_ENDPOINT = `${BASE_URL}/download/`;
 export const LOGIN_URL = `${BASE_URL}/auth/login`;
 export const REGISTER_URL = `${BASE_URL}/auth/register`;
 export const ME_URL = `${BASE_URL}/auth/me`;
+export const CREATE_SHARE_URL = `${BASE_URL}/share/create`;
+export const GET_SHARES_URL = `${BASE_URL}/shares`;
+export const PUBLIC_DOWNLOAD_URL = `${BASE_URL}/share/`;
 
 // Helper function to check token expiry
 export const isTokenExpired = (token) => {

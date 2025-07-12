@@ -22,6 +22,20 @@ async def init_db():
                 upload_capacity_bytes INTEGER DEFAULT 104857600 -- Default to 100MB
             )
         """)
+        
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS shared_videos (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                original_filename TEXT NOT NULL,
+                compressed_filename TEXT NOT NULL,
+                r2_key TEXT NOT NULL,
+                share_token TEXT UNIQUE NOT NULL,
+                expiry_date TEXT NOT NULL,
+                user_id INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+            )
+        """)
         await db.commit()
 
 async def init_admin_user():
