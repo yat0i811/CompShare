@@ -35,6 +35,8 @@ export default function useVideoProcessing({ token, handleLogout, userInfo }) {
   const [modifiedFile, setModifiedFile] = useState(null);
   const [modifiedVideoUrl, setModifiedVideoUrl] = useState("");
   const [useGPU, setUseGPU] = useState(true);
+  const [videoDuration, setVideoDuration] = useState(0);
+  const [durationAvailable, setDurationAvailable] = useState(true);
   
   // 共有機能の状態
   const [compressedR2Key, setCompressedR2Key] = useState("");
@@ -118,7 +120,16 @@ export default function useVideoProcessing({ token, handleLogout, userInfo }) {
     return originalSize * factor;
   };
 
-  // 動画の解像度を取得してビットレートのデフォルト値を設定
+  // GPU使用時のビットレート制御に基づく推定サイズ計算
+  const estimateCompressedSizeGPU = (originalSize, bitrateValue, duration = null) => {
+    // 動画の長さが不明な場合は、一般的な動画の長さ（3分）を仮定
+    const estimatedDuration = duration || 180; // 秒単位
+    // ビットレート（Mbps）をバイトに変換して推定サイズを計算
+    const estimatedSize = (bitrateValue * 1000000 * estimatedDuration) / 8; // ビットをバイトに変換
+    return estimatedSize;
+  };
+
+  // 動画の解像度と長さを取得してビットレートのデフォルト値を設定
   const getVideoDimensions = (file) => {
     return new Promise((resolve) => {
       const video = document.createElement('video');
@@ -127,6 +138,8 @@ export default function useVideoProcessing({ token, handleLogout, userInfo }) {
       video.onloadedmetadata = () => {
         const width = video.videoWidth;
         const height = video.videoHeight;
+        const duration = video.duration;
+        const isDurationAvailable = !isNaN(duration) && duration > 0 && isFinite(duration);
         
         // 解像度に応じたデフォルトビットレート設定
         let defaultBitrate;
@@ -140,12 +153,24 @@ export default function useVideoProcessing({ token, handleLogout, userInfo }) {
           defaultBitrate = 1;
         }
         
-        resolve({ width, height, defaultBitrate });
+        resolve({ 
+          width, 
+          height, 
+          duration: isDurationAvailable ? duration : 180, 
+          defaultBitrate,
+          isDurationAvailable 
+        });
       };
       
       video.onerror = () => {
         // エラーの場合はデフォルト値を返す
-        resolve({ width: 1920, height: 1080, defaultBitrate: 3 });
+        resolve({ 
+          width: 1920, 
+          height: 1080, 
+          duration: 180, 
+          defaultBitrate: 3,
+          isDurationAvailable: false 
+        });
       };
       
       video.src = URL.createObjectURL(file);
@@ -417,10 +442,13 @@ export default function useVideoProcessing({ token, handleLogout, userInfo }) {
     modifiedFile, setModifiedFile,
     modifiedVideoUrl, setModifiedVideoUrl,
     useGPU, setUseGPU,
+    videoDuration, setVideoDuration,
+    durationAvailable, setDurationAvailable,
     handleUpload,
     downloadCompressedVideo,
     formatSize,
     estimateCompressedSize,
+    estimateCompressedSizeGPU,
     getVideoDimensions,
     // 共有機能
     compressedR2Key,

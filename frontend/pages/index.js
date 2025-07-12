@@ -30,8 +30,11 @@ export default function Home() {
     downloadCompressedVideo,
     formatSize,
     estimateCompressedSize,
+    estimateCompressedSizeGPU,
     getVideoDimensions,
     useGPU, setUseGPU,
+    videoDuration, setVideoDuration,
+    durationAvailable, setDurationAvailable,
     // 共有機能
     compressedR2Key,
     shareUrl,
@@ -67,14 +70,18 @@ export default function Home() {
       setProgress(0);
       setErrorMessage("");
       
-      // 動画の解像度を取得してビットレートのデフォルト値を設定
+      // 動画の解像度と長さを取得してビットレートのデフォルト値を設定
       if (selectedFile.type.startsWith("video/")) {
         try {
-          const { width, height, defaultBitrate } = await getVideoDimensions(selectedFile);
+          const { width, height, duration, defaultBitrate, isDurationAvailable } = await getVideoDimensions(selectedFile);
           setBitrate(defaultBitrate);
+          setVideoDuration(duration);
+          setDurationAvailable(isDurationAvailable);
         } catch (error) {
           console.warn("動画の解像度取得に失敗しました:", error);
           setBitrate(3); // デフォルト値
+          setVideoDuration(180); // デフォルトの長さ（3分）
+          setDurationAvailable(false);
         }
       }
     }
@@ -198,9 +205,15 @@ export default function Home() {
               <p className="hint">CRF値が高いほどファイルサイズが小さくなりますが、画質も低下します。</p>
             </div>
           )}
-          {file && !useGPU && (
+          {file && (
             <p className="hint">
-              推定圧縮後サイズ: {formatSize(estimateCompressedSize(file.size, crf))}
+              推定圧縮後サイズ: {useGPU 
+                ? (durationAvailable 
+                    ? formatSize(estimateCompressedSizeGPU(file.size, bitrate, videoDuration))
+                    : "動画の長さが取得できません（ビットレート: " + bitrate + " Mbps）"
+                  )
+                : formatSize(estimateCompressedSize(file.size, crf))
+              }
             </p>
           )}
           <div className="control">
