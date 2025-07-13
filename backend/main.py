@@ -181,6 +181,39 @@ async def cleanup_expired_videos():
     except Exception as e:
         print(f"クリーンアップタスクでエラーが発生: {e}")
 
+# 共有リンク未作成の圧縮動画を1日後に自動削除するバッチ
+async def cleanup_unshared_compressed_videos():
+    """共有リンク未作成の圧縮動画を1日後に自動削除"""
+    try:
+        print("未共有圧縮動画のクリーンアップを開始...")
+        now = datetime.now(timezone.utc)
+        deleted_count = 0
+        # R2のcompressed/ディレクトリ内のファイル一覧を取得
+        paginator = r2_client.get_paginator('list_objects_v2')
+        for page in paginator.paginate(Bucket=R2_BUCKET_NAME, Prefix="compressed/"):
+            for obj in page.get('Contents', []):
+                key = obj['Key']
+                last_modified = obj['LastModified']
+                # 3時間以上前か判定
+                if (now - last_modified).total_seconds() < 10800:
+                    continue
+                # DBにr2_keyが存在するかチェック
+                async with aiosqlite.connect(settings.DB_PATH) as db:
+                    cursor = await db.execute("SELECT 1 FROM shared_videos WHERE r2_key = ?", (key,))
+                    exists = await cursor.fetchone()
+                if exists:
+                    continue  # 共有リンク作成済み
+                # 削除実行
+                try:
+                    r2_client.delete_object(Bucket=R2_BUCKET_NAME, Key=key)
+                    print(f"未共有・1日経過ファイル削除: {key}")
+                    deleted_count += 1
+                except Exception as e:
+                    print(f"削除失敗: {key}, {e}")
+        print(f"未共有圧縮動画のクリーンアップ完了: {deleted_count} 個のファイルを削除")
+    except Exception as e:
+        print(f"未共有圧縮動画クリーンアップでエラー: {e}")
+
 # スケジューラーの設定
 scheduler = AsyncIOScheduler()
 
@@ -199,6 +232,9 @@ async def startup_event():
     
     # 開始時に一度クリーンアップを実行
     await cleanup_expired_videos()
+    
+    # APSchedulerで1時間ごとに未共有圧縮動画のクリーンアップも実行
+    scheduler.add_job(cleanup_unshared_compressed_videos, CronTrigger(minute=0))
     
     scheduler.start()
     print("スケジューラーを開始しました。")

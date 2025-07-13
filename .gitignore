@@ -1,5 +1,6 @@
 # --- ENV file ---
 backend/.env
+frontend/.env
 
 # --- DB ---
 backend/db_data/

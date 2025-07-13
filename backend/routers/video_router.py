@@ -599,7 +599,7 @@ async def compress_video_async_endpoint(
     key: str = Form(...),
     filename: str = Form(...),
     crf: int = Form(28),
-    bitrate: float = Form(3.0),
+    bitrate: float = Form(4.0),
     resolution: str = Form("source"),
     width: Optional[str] = Form(None),
     height: Optional[str] = Form(None),
@@ -694,7 +694,7 @@ async def upload_and_compress_local_endpoint(
     file: UploadFile = File(...),
     filename: str = Form(...),
     crf: int = Form(28),
-    bitrate: float = Form(3.0),
+    bitrate: float = Form(4.0),
     resolution: str = Form("source"),
     width: Optional[str] = Form(None),
     height: Optional[str] = Form(None),
@@ -1612,3 +1612,265 @@ async def get_direct_download_url_endpoint(
             details=f"Direct download URL error for {sanitized_filename}: {str(e)}"
         )
         raise HTTPException(status_code=500, detail=f"直接ダウンロードURLの生成中にエラーが発生しました: {str(e)}") 
+
+# 動画管理機能のAPIエンドポイント
+@router.put("/manage/update-expiry/{share_token}", summary="共有動画の有効期限を更新")
+async def update_video_expiry(
+    request: Request,
+    share_token: str,
+    new_expiry_days: int,
+    current_user: dict = Depends(get_current_user_from_token)
+):
+    """共有動画の有効期限を更新するエンドポイント"""
+    print(f"=== 有効期限更新開始 ===")
+    print(f"Share token: {share_token}")
+    print(f"New expiry days: {new_expiry_days}")
+    print(f"User: {current_user['sub']}")
+    
+    # 有効期限日数の検証
+    if new_expiry_days < 1 or new_expiry_days > 365:
+        raise HTTPException(status_code=400, detail="有効期限は1日から365日の間で指定してください")
+    
+    try:
+        # ユーザーIDを取得
+        user_info = await crud.get_user_by_username(current_user["sub"])
+        if not user_info:
+            raise HTTPException(status_code=404, detail="ユーザーが見つかりません")
+        
+        user_id = user_info["id"]
+        
+        # 共有動画の存在確認と所有者確認
+        video = await crud.get_shared_video_by_token_and_user(share_token, user_id)
+        if not video:
+            raise HTTPException(status_code=404, detail="共有動画が見つからないか、アクセス権限がありません")
+        
+        # 新しい有効期限を計算
+        from datetime import datetime, timezone, timedelta
+        jst = timezone(timedelta(hours=9))
+        new_expiry_date = (datetime.now(jst) + timedelta(days=new_expiry_days)).isoformat()
+        
+        # データベースを更新
+        success = await crud.update_shared_video_expiry(share_token, new_expiry_date, user_id)
+        if not success:
+            raise HTTPException(status_code=500, detail="有効期限の更新に失敗しました")
+        
+        # 成功ログ
+        log_security_event(
+            event_type="VIDEO_EXPIRY_UPDATED",
+            user=current_user["sub"],
+            ip_address=get_client_ip(request),
+            details=f"Updated expiry for video: {video['original_filename']} to {new_expiry_days} days"
+        )
+        
+        print("=== 有効期限更新正常終了 ===")
+        return {
+            "message": "有効期限が正常に更新されました",
+            "share_token": share_token,
+            "new_expiry_date": new_expiry_date,
+            "new_expiry_days": new_expiry_days
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"予期しないエラー: {type(e).__name__}: {str(e)}")
+        import traceback
+        print(f"トレースバック: {traceback.format_exc()}")
+        log_security_violation(
+            request=request,
+            user=current_user["sub"],
+            violation_type="EXPIRY_UPDATE_ERROR",
+            details=f"Error updating expiry for {share_token}: {str(e)}"
+        )
+        raise HTTPException(status_code=500, detail=f"有効期限の更新中にエラーが発生しました: {str(e)}")
+
+@router.delete("/manage/delete/{share_token}", summary="共有動画を削除")
+async def delete_shared_video(
+    request: Request,
+    share_token: str,
+    current_user: dict = Depends(get_current_user_from_token)
+):
+    """共有動画を削除するエンドポイント（R2ストレージからも削除）"""
+    print(f"=== 動画削除開始 ===")
+    print(f"Share token: {share_token}")
+    print(f"User: {current_user['sub']}")
+    
+    try:
+        # ユーザーIDを取得
+        user_info = await crud.get_user_by_username(current_user["sub"])
+        if not user_info:
+            raise HTTPException(status_code=404, detail="ユーザーが見つかりません")
+        
+        user_id = user_info["id"]
+        
+        # 共有動画の存在確認と所有者確認
+        video = await crud.get_shared_video_by_token_and_user(share_token, user_id)
+        if not video:
+            raise HTTPException(status_code=404, detail="共有動画が見つからないか、アクセス権限がありません")
+        
+        # R2ストレージからファイルを削除
+        try:
+            r2_client.delete_object(
+                Bucket=settings.R2_BUCKET_NAME,
+                Key=video['r2_key']
+            )
+            print(f"R2ストレージからファイル削除完了: {video['r2_key']}")
+        except Exception as r2_error:
+            print(f"R2ストレージからの削除エラー（無視）: {r2_error}")
+            # R2からの削除に失敗してもデータベースからは削除を続行
+        
+        # データベースから削除
+        success = await crud.delete_shared_video_by_token_and_user(share_token, user_id)
+        if not success:
+            raise HTTPException(status_code=500, detail="動画の削除に失敗しました")
+        
+        # 成功ログ
+        log_security_event(
+            event_type="VIDEO_DELETED",
+            user=current_user["sub"],
+            ip_address=get_client_ip(request),
+            details=f"Deleted video: {video['original_filename']}"
+        )
+        
+        print("=== 動画削除正常終了 ===")
+        return {
+            "message": "動画が正常に削除されました",
+            "share_token": share_token,
+            "deleted_filename": video['original_filename']
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"予期しないエラー: {type(e).__name__}: {str(e)}")
+        import traceback
+        print(f"トレースバック: {traceback.format_exc()}")
+        log_security_violation(
+            request=request,
+            user=current_user["sub"],
+            violation_type="VIDEO_DELETE_ERROR",
+            details=f"Error deleting video {share_token}: {str(e)}"
+        )
+        raise HTTPException(status_code=500, detail=f"動画の削除中にエラーが発生しました: {str(e)}")
+
+@router.get("/manage/stats", summary="ユーザーの動画統計情報を取得")
+async def get_user_video_stats(
+    request: Request,
+    current_user: dict = Depends(get_current_user_from_token)
+):
+    """ユーザーの動画統計情報を取得するエンドポイント"""
+    print(f"=== 統計情報取得開始 ===")
+    print(f"User: {current_user['sub']}")
+    
+    try:
+        # ユーザーIDを取得
+        user_info = await crud.get_user_by_username(current_user["sub"])
+        if not user_info:
+            raise HTTPException(status_code=404, detail="ユーザーが見つかりません")
+        
+        user_id = user_info["id"]
+        
+        # 統計情報を取得
+        stats = await crud.get_user_video_stats(user_id)
+        
+        # 成功ログ
+        log_security_event(
+            event_type="VIDEO_STATS_RETRIEVED",
+            user=current_user["sub"],
+            ip_address=get_client_ip(request),
+            details=f"Retrieved video stats: {stats}"
+        )
+        
+        print("=== 統計情報取得正常終了 ===")
+        return stats
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"予期しないエラー: {type(e).__name__}: {str(e)}")
+        import traceback
+        print(f"トレースバック: {traceback.format_exc()}")
+        log_security_violation(
+            request=request,
+            user=current_user["sub"],
+            violation_type="STATS_RETRIEVAL_ERROR",
+            details=f"Error retrieving stats: {str(e)}"
+        )
+        raise HTTPException(status_code=500, detail=f"統計情報の取得中にエラーが発生しました: {str(e)}")
+
+@router.get("/manage/videos", summary="ユーザーの動画一覧を取得（管理用）")
+async def get_user_videos_for_management(
+    request: Request,
+    current_user: dict = Depends(get_current_user_from_token)
+):
+    """ユーザーの動画一覧を取得するエンドポイント（管理ページ用）"""
+    print(f"=== 動画一覧取得開始（管理用） ===")
+    print(f"User: {current_user['sub']}")
+    
+    try:
+        # ユーザーIDを取得
+        user_info = await crud.get_user_by_username(current_user["sub"])
+        if not user_info:
+            raise HTTPException(status_code=404, detail="ユーザーが見つかりません")
+        
+        user_id = user_info["id"]
+        
+        # 動画一覧を取得
+        videos = await crud.get_shared_videos_by_user(user_id)
+        
+        # 各動画の詳細情報を追加
+        from datetime import datetime, timezone, timedelta
+        jst = timezone(timedelta(hours=9))
+        current_time = datetime.now(jst).isoformat()
+        
+        enhanced_videos = []
+        for video in videos:
+            # 共有URLを生成
+            share_url = f"{settings.FRONTEND_URL}/share/{video['share_token']}"
+            
+            # 期限切れかどうかを判定
+            is_expired = video['expiry_date'] < current_time
+            
+            # 残り日数を計算
+            try:
+                expiry_date = datetime.fromisoformat(video['expiry_date'])
+                remaining_days = (expiry_date - datetime.now(jst)).days
+                remaining_days = max(0, remaining_days) if not is_expired else 0
+            except:
+                remaining_days = 0
+            
+            enhanced_video = {
+                **video,
+                "share_url": share_url,
+                "is_expired": is_expired,
+                "remaining_days": remaining_days
+            }
+            enhanced_videos.append(enhanced_video)
+        
+        # 成功ログ
+        log_security_event(
+            event_type="VIDEO_LIST_RETRIEVED",
+            user=current_user["sub"],
+            ip_address=get_client_ip(request),
+            details=f"Retrieved {len(enhanced_videos)} videos for management"
+        )
+        
+        print("=== 動画一覧取得正常終了（管理用） ===")
+        return {
+            "videos": enhanced_videos,
+            "total_count": len(enhanced_videos)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"予期しないエラー: {type(e).__name__}: {str(e)}")
+        import traceback
+        print(f"トレースバック: {traceback.format_exc()}")
+        log_security_violation(
+            request=request,
+            user=current_user["sub"],
+            violation_type="VIDEO_LIST_RETRIEVAL_ERROR",
+            details=f"Error retrieving video list: {str(e)}"
+        )
+        raise HTTPException(status_code=500, detail=f"動画一覧の取得中にエラーが発生しました: {str(e)}")

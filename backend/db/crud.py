@@ -197,3 +197,63 @@ async def delete_shared_video_by_token(share_token: str) -> bool:
         )
         await db.commit()
         return cursor.rowcount > 0
+
+# 動画管理機能の追加
+async def update_shared_video_expiry(share_token: str, new_expiry_date: str, user_id: int) -> bool:
+    """共有動画の有効期限を更新"""
+    async with aiosqlite.connect(settings.DB_PATH) as db:
+        cursor = await db.execute(
+            "UPDATE shared_videos SET expiry_date = ? WHERE share_token = ? AND user_id = ?",
+            (new_expiry_date, share_token, user_id)
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+async def get_shared_video_by_token_and_user(share_token: str, user_id: int):
+    """特定のユーザーの共有動画を取得"""
+    async with aiosqlite.connect(settings.DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM shared_videos WHERE share_token = ? AND user_id = ?",
+            (share_token, user_id)
+        )
+        video = await cursor.fetchone()
+        return dict(video) if video else None
+
+async def delete_shared_video_by_token_and_user(share_token: str, user_id: int) -> bool:
+    """特定のユーザーの共有動画を削除"""
+    async with aiosqlite.connect(settings.DB_PATH) as db:
+        cursor = await db.execute(
+            "DELETE FROM shared_videos WHERE share_token = ? AND user_id = ?",
+            (share_token, user_id)
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+async def get_user_video_stats(user_id: int):
+    """ユーザーの動画統計情報を取得"""
+    async with aiosqlite.connect(settings.DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        
+        # 総動画数
+        cursor = await db.execute(
+            "SELECT COUNT(*) as total_videos FROM shared_videos WHERE user_id = ?",
+            (user_id,)
+        )
+        total_videos = await cursor.fetchone()
+        
+        # 有効な動画数（期限切れでない）
+        from datetime import datetime, timezone, timedelta
+        jst = timezone(timedelta(hours=9))
+        current_time = datetime.now(jst).isoformat()
+        
+        cursor = await db.execute(
+            "SELECT COUNT(*) as active_videos FROM shared_videos WHERE user_id = ? AND expiry_date > ?",
+            (user_id, current_time)
+        )
+        active_videos = await cursor.fetchone()
+        
+        return {
+            "total_videos": total_videos[0] if total_videos else 0,
+            "active_videos": active_videos[0] if active_videos else 0
+        }

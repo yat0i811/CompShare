@@ -81,8 +81,8 @@ export default function Home() {
           setDurationAvailable(isDurationAvailable);
         } catch (error) {
           console.warn("動画の解像度取得に失敗しました:", error);
-          setBitrate(3); // デフォルト値
-          setVideoDuration(180); // デフォルトの長さ（3分）
+          setBitrate(4); // デフォルト値
+          setVideoDuration(180); // デフォルトの長さ
           setDurationAvailable(false);
         }
       }
@@ -158,9 +158,9 @@ export default function Home() {
 
   return (
     <>
-      <Head><title>動画圧縮アプリ</title></Head>
+      <Head><title>CompShare</title></Head>
       <div className="container">
-        <h1>動画圧縮アプリ</h1>
+        <h1>動画圧縮共有サービス</h1>
         {errorMessage && <p className="error">⚠️ {errorMessage}</p>}
         <div className="card">
           <input type="file" accept="video/*" onChange={handleFileChange} />

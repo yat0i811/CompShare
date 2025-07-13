@@ -25,7 +25,7 @@ export default function useVideoProcessing({ token, handleLogout, userInfo }) {
   const [progress, setProgress] = useState(0);
   const [clientId] = useState(uuidv4());
   const [crf, setCrf] = useState(28);
-  const [bitrate, setBitrate] = useState(3); // ビットレート設定（Mbps）
+  const [bitrate, setBitrate] = useState(4); // ビットレート設定（Mbps）
   const [resolution, setResolution] = useState("source");
   const [customWidth, setCustomWidth] = useState("");
   const [customHeight, setCustomHeight] = useState("");
@@ -146,9 +146,9 @@ export default function useVideoProcessing({ token, handleLogout, userInfo }) {
         if (width >= 3840 || height >= 2160) {  // 4K
           defaultBitrate = 8;
         } else if (width >= 1920 || height >= 1080) {  // 1080p
-          defaultBitrate = 3;
+          defaultBitrate = 4;
         } else if (width >= 1280 || height >= 720) {  // 720p
-          defaultBitrate = 2;
+          defaultBitrate = 3;
         } else {  // 480p以下
           defaultBitrate = 1;
         }
@@ -168,7 +168,7 @@ export default function useVideoProcessing({ token, handleLogout, userInfo }) {
           width: 1920, 
           height: 1080, 
           duration: 180, 
-          defaultBitrate: 3,
+          defaultBitrate: 4,
           isDurationAvailable: false 
         });
       };

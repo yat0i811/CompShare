@@ -37,6 +37,11 @@ const Layout = ({ children }) => {
                                 <button>ホーム</button>
                             </Link>
                         </li>
+                        <li>
+                            <Link href="/manage">
+                                <button>動画管理ページ</button>
+                            </Link>
+                        </li>
                         {isAdmin && (
                             <li>
                                 <Link href="/admin">

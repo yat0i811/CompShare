@@ -28,6 +28,8 @@ class Settings(BaseSettings):
         "https://compshare.yat0i.com"
     ]
 
+    FRONTEND_URL: str = "https://compshareapi.yat0i.com"
+
     UPLOAD_DIR: str = "./uploads"
 
     # .env ファイルから読み込むための設定
