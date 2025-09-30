@@ -143,7 +143,7 @@
 アプリケーションを起動するには、プロジェクトのルートディレクトリで以下のスクリプトを実行
 
 ```bash
-.\start_all.bat
+.\start.bat
 ```
 
 これにより、Docker Compose によってバックエンドとフロントエンドのコンテナが起動し、設定済みの Cloudflare Tunnel が開始されます。アプリケーションには、設定した Cloudflare Tunnel のURL経由でアクセスできます。
@@ -155,7 +155,7 @@
 アプリケーションを停止するには、プロジェクトのルートディレクトリで以下のスクリプトを実行します。
 
 ```bash
-.\stop_all.bat
+.\stop.bat
 ```
 
 これにより、起動しているDockerコンテナとCloudflare Tunnelプロセスが停止します。
