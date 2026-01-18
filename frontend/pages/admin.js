@@ -180,6 +180,10 @@ const AdminPage = () => {
     const { token, isAdmin, userInfo } = useAuth();
     const [users, setUsers] = useState([]);
     const [pendingUsers, setPendingUsers] = useState([]);
+    const [videos, setVideos] = useState([]); // 動画一覧
+    const [cleanupFiles, setCleanupFiles] = useState([]); // クリーンアップ対象ファイル一覧
+    const [isScanning, setIsScanning] = useState(false); // スキャン中かどうか
+    const [isCleaning, setIsCleaning] = useState(false); // クリーンアップ実行中かどうか
     const [error, setError] = useState('');
     const [isLoading, setIsLoading] = useState(true);
     const [updatingUser, setUpdatingUser] = useState(null); // 容量更新中のユーザー名
@@ -260,8 +264,73 @@ const AdminPage = () => {
                 const errorData = await pendingUsersRes.json().catch(() => ({ detail: '未承認ユーザー一覧の取得に失敗しました。' }));
                 setError(formatError(errorData));
             }
+
+            // 動画一覧の取得
+            const videosRes = await fetch(`${BASE_URL}/admin/videos`, {
+                headers: { 'Authorization': `Bearer ${currentToken}` }
+            });
+
+            if (videosRes.ok) {
+                const videosData = await videosRes.json();
+                setVideos(videosData);
+            } else {
+                console.error("Failed to fetch videos");
+                // 動画取得失敗は致命的エラーにしない（ユーザー管理はできるため）
+            }
         } catch (e) {
             setError('管理者データの取得中にエラーが発生しました。');
+        }
+    };
+
+    const handleScanCleanup = async () => {
+        if (!token) return;
+        setIsScanning(true);
+        setCleanupFiles([]);
+        setError('');
+        try {
+            const res = await fetch(`${BASE_URL}/admin/cleanup/scan`, {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            if (res.ok) {
+                const data = await res.json();
+                setCleanupFiles(data.files || []);
+                if (data.count === 0) {
+                    alert("削除対象のファイルは見つかりませんでした。");
+                }
+            } else {
+                const data = await res.json();
+                setError(data.detail || "スキャン中にエラーが発生しました。");
+            }
+        } catch (e) {
+            setError("スキャン処理中にエラーが発生しました。");
+        } finally {
+            setIsScanning(false);
+        }
+    };
+
+    const handleExecuteCleanup = async () => {
+        if (!token) return;
+        if (!window.confirm("表示されているファイルを削除しますか？この操作は取り消せません。")) return;
+        
+        setIsCleaning(true);
+        setError('');
+        try {
+            const res = await fetch(`${BASE_URL}/admin/cleanup/execute`, {
+                method: 'POST',
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            if (res.ok) {
+                const data = await res.json();
+                alert(`${data.deleted_files.length} 個のファイルを削除しました。`);
+                setCleanupFiles([]); // リストをクリア
+            } else {
+                const data = await res.json();
+                setError(data.detail || "クリーンアップ実行中にエラーが発生しました。");
+            }
+        } catch (e) {
+            setError("クリーンアップ実行処理中にエラーが発生しました。");
+        } finally {
+            setIsCleaning(false);
         }
     };
 
@@ -328,6 +397,30 @@ const AdminPage = () => {
         } catch (e) {
             alert('登録取り消し処理中にエラーが発生しました');
             setError('登録取り消し処理中にエラーが発生しました。');
+        }
+    };
+
+    const handleDeleteVideo = async (videoId) => {
+        if (!token) return;
+        if (!window.confirm("この動画を削除しますか？この操作は取り消せません。")) return;
+        
+        setError('');
+        try {
+            const res = await fetch(`${BASE_URL}/admin/videos/${videoId}`, {
+                method: 'DELETE',
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            if (res.ok) {
+                alert(`動画ID: ${videoId} を削除しました`);
+                fetchAdminData(token);
+            } else {
+                const errorData = await res.json().catch(() => ({ detail: '不明なエラー' }));
+                alert(`動画削除エラー: ${errorData.detail}`);
+                setError(errorData.detail);
+            }
+        } catch (e) {
+            alert('動画削除処理中にエラーが発生しました');
+            console.error(e);
         }
     };
 
@@ -480,6 +573,78 @@ const AdminPage = () => {
                             </li>
                         ))}
                     </ul>
+                )}
+            </UserSection>
+
+            <UserSection>
+                <h2>動画管理</h2>
+                {videos.length === 0 ? (
+                    <p>共有されている動画はありません。</p>
+                ) : (
+                    <UserGrid>
+                        {videos.map(video => (
+                            <UserCard key={video.id}>
+                                <UserInfo>
+                                    <div><strong>ID:</strong> {video.id}</div>
+                                    <div style={{wordBreak: "break-all"}}><strong>元ファイル:</strong> {video.original_filename}</div>
+                                    <div style={{wordBreak: "break-all"}}><strong>圧縮ファイル:</strong> {video.compressed_filename}</div>
+                                    <div><strong>所有者:</strong> {video.username}</div>
+                                    <div><strong>作成日:</strong> {new Date(video.created_at).toLocaleString()}</div>
+                                    <div><strong>期限:</strong> {new Date(video.expiry_date).toLocaleString()}</div>
+                                </UserInfo>
+                                <ButtonContainer>
+                                    <RemoveButton onClick={() => handleDeleteVideo(video.id)}>削除</RemoveButton>
+                                    <a href={`${BASE_URL.replace('/api', '')}/share/${video.share_token}`} target="_blank" rel="noopener noreferrer" style={{
+                                        padding: '8px 15px',
+                                        backgroundColor: '#3498db',
+                                        color: 'white',
+                                        textDecoration: 'none',
+                                        borderRadius: '5px',
+                                        fontSize: '0.9em'
+                                    }}>確認</a>
+                                </ButtonContainer>
+                            </UserCard>
+                        ))}
+                    </UserGrid>
+                )}
+            </UserSection>
+
+            <UserSection>
+                <h2>未共有ファイルのクリーンアップ</h2>
+                <p>共有リンクが作成されず、作成から3時間以上経過した圧縮ファイルを検索・削除します。</p>
+                <ButtonContainer style={{ marginBottom: "20px" }}>
+                    <BaseButton 
+                        style={{ backgroundColor: "#3498db", color: "white" }} 
+                        onClick={handleScanCleanup}
+                        disabled={isScanning || isCleaning}
+                    >
+                        {isScanning ? "スキャン中..." : "スキャン開始"}
+                    </BaseButton>
+                    {cleanupFiles.length > 0 && (
+                        <RemoveButton 
+                            onClick={handleExecuteCleanup}
+                            disabled={isScanning || isCleaning}
+                        >
+                           {isCleaning ? "削除中..." : "これらを削除する"}
+                        </RemoveButton>
+                    )}
+                </ButtonContainer>
+
+                {cleanupFiles.length > 0 && (
+                    <div>
+                        <h3>検出されたファイル ({cleanupFiles.length}件)</h3>
+                        <ul style={{ maxHeight: "300px", overflowY: "auto", border: "1px solid #ddd", padding: "10px", borderRadius: "5px" }}>
+                            {cleanupFiles.map((file, index) => (
+                                <li key={index} style={{ marginBottom: "5px", fontSize: "0.9em" }}>
+                                    <strong>{file.key}</strong> <br/>
+                                    <span style={{ color: "#666" }}>
+                                        サイズ: {(file.size / 1024 / 1024).toFixed(2)} MB, 
+                                        更新日: {new Date(file.last_modified).toLocaleString()}
+                                    </span>
+                                </li>
+                            ))}
+                        </ul>
+                    </div>
                 )}
             </UserSection>
         </StyledAdminContainer>

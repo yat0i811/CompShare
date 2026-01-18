@@ -146,6 +146,8 @@ r2_client = boto3.client(
 
 # video_routerにR2クライアントを設定
 video_router.init_r2_client(r2_client)
+# admin_routerにR2クライアントを設定
+admin_router.init_r2_client(r2_client)
 
 # 期限切れ動画のクリーンアップタスク
 async def cleanup_expired_videos():
@@ -181,9 +183,9 @@ async def cleanup_expired_videos():
     except Exception as e:
         print(f"クリーンアップタスクでエラーが発生: {e}")
 
-# 共有リンク未作成の圧縮動画を1日後に自動削除するバッチ
+# 共有リンク未作成の圧縮動画を3時間後に自動削除するバッチ
 async def cleanup_unshared_compressed_videos():
-    """共有リンク未作成の圧縮動画を1日後に自動削除"""
+    """共有リンク未作成の圧縮動画を3時間後に自動削除"""
     try:
         print("未共有圧縮動画のクリーンアップを開始...")
         now = datetime.now(timezone.utc)
@@ -206,7 +208,7 @@ async def cleanup_unshared_compressed_videos():
                 # 削除実行
                 try:
                     r2_client.delete_object(Bucket=R2_BUCKET_NAME, Key=key)
-                    print(f"未共有・1日経過ファイル削除: {key}")
+                    print(f"未共有・3時間経過ファイル削除: {key}")
                     deleted_count += 1
                 except Exception as e:
                     print(f"削除失敗: {key}, {e}")

@@ -257,3 +257,34 @@ async def get_user_video_stats(user_id: int):
             "total_videos": total_videos[0] if total_videos else 0,
             "active_videos": active_videos[0] if active_videos else 0
         }
+
+# 管理者機能
+async def get_all_shared_videos_admin() -> List[Dict[str, Any]]:
+    """管理者用：全ての共有動画を取得（ユーザー情報付き）"""
+    async with aiosqlite.connect(settings.DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        # usersテーブルと結合してユーザー名も取得
+        query = """
+            SELECT sv.*, u.username 
+            FROM shared_videos sv
+            JOIN users u ON sv.user_id = u.id
+            ORDER BY sv.created_at DESC
+        """
+        cursor = await db.execute(query)
+        videos = await cursor.fetchall()
+        return [dict(video) for video in videos]
+
+async def get_shared_video_by_id(video_id: int) -> Optional[Dict[str, Any]]:
+    """IDによる動画取得"""
+    async with aiosqlite.connect(settings.DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute("SELECT * FROM shared_videos WHERE id = ?", (video_id,))
+        video = await cursor.fetchone()
+        return dict(video) if video else None
+
+async def delete_shared_video_by_id(video_id: int) -> bool:
+    """IDによる動画削除"""
+    async with aiosqlite.connect(settings.DB_PATH) as db:
+        cursor = await db.execute("DELETE FROM shared_videos WHERE id = ?", (video_id,))
+        await db.commit()
+        return cursor.rowcount > 0
