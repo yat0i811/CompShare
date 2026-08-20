@@ -221,6 +221,7 @@ async def run_ffmpeg_process(
     input_path: str,
     output_path: str,
     ffmpeg_options: list,
+    cpu_fallback_options: list,
     client_id: str
 ):
     command = ["ffmpeg", "-y", "-i", input_path] + ffmpeg_options + ["-progress", "pipe:1", "-nostats", output_path]
@@ -284,15 +285,8 @@ async def run_ffmpeg_process(
                     except Exception as e:
                         pass
                 
-                # CPUエンコーダーで再試行
-                cpu_options = []
-                for option in ffmpeg_options:
-                    if option == "h264_nvenc":
-                        cpu_options.append("libx264")
-                    else:
-                        cpu_options.append(option)
-                
-                command = ["ffmpeg", "-y", "-i", input_path] + cpu_options + ["-progress", "pipe:1", "-nostats", output_path]
+                # CPUエンコーダーで再試行（呼び出し元が構築済みのcpu_fallback_optionsをそのまま使う）
+                command = ["ffmpeg", "-y", "-i", input_path] + cpu_fallback_options + ["-progress", "pipe:1", "-nostats", output_path]
                 process = await asyncio.create_subprocess_exec(
                     *command,
                     stdout=asyncio.subprocess.PIPE,
@@ -366,10 +360,26 @@ def is_gpu_encoder_available() -> bool:
         # NVENCエンコーダーが存在する場合、実際に動作するかテスト
         if has_nvenc:
             try:
-                # 簡単なテスト用のコマンドを実行
+                # プローブは本番と同じオプション列で行う。ここで通れば本番コマンドも通る
+                # （逆にp5/tune未対応のビルドではプローブが失敗して、正しくCPUフォールバック＋
+                # warning通知に落ちる）。プローブと本番の乖離で「GPU可と判定したのに実行時に
+                # Unrecognized optionでハードエラー」になる事故を防ぐため、
+                # build_encoder_optionsから引数を生成する。
+                # resolution="source"を渡すのは、プローブの合成入力(testsrc)に対して
+                # -vf scaleを付けないため（この引数の組み合わせでは-vfは生成されない）。
+                # 戻り値は"-vcodec h264_nvenc"で始まる完全な列なので、-c:vは別途付けない。
+                probe_encoder_options = build_encoder_options(
+                    NVENC_ENCODER,
+                    crf=28,
+                    resolution="source",
+                    width=None,
+                    height=None,
+                    source_resolution=None,
+                )
                 test_result = subprocess.run(
-                    ["ffmpeg", "-f", "lavfi", "-i", "testsrc=duration=1:size=320x240:rate=1", 
-                     "-c:v", "h264_nvenc", "-preset", "fast", "-t", "1", "-f", "null", "-"],
+                    ["ffmpeg", "-f", "lavfi", "-i", "testsrc=duration=1:size=320x240:rate=1"]
+                    + probe_encoder_options
+                    + ["-t", "1", "-f", "null", "-"],
                     capture_output=True,
                     text=True,
                     timeout=30
@@ -390,7 +400,10 @@ def is_gpu_encoder_available() -> bool:
         return False
 
 def get_ffmpeg_version() -> str:
-    """FFmpegのバージョンを取得"""
+    """【現在未使用】is_modern_ffmpeg分岐の削除（CLOSE_ISSUES §6-3）により本番からの呼び出し元は無い。test_ffmpeg_options.pyが「ビルド時に呼ばれないこと」の監視対象として参照している。
+
+    FFmpegのバージョンを取得
+    """
     try:
         import subprocess
         result = subprocess.run(
@@ -409,7 +422,10 @@ def get_ffmpeg_version() -> str:
         return "unknown"
 
 def is_nvenc_supported() -> bool:
-    """NVENCエンコーダーが実際にサポートされているかチェック"""
+    """【現在未使用】導入時から呼び出し元が無い。
+
+    NVENCエンコーダーが実際にサポートされているかチェック
+    """
     try:
         import subprocess
         result = subprocess.run(
@@ -443,13 +459,35 @@ def get_video_resolution(filepath: str) -> tuple[int, int]:
         print(f"Error getting video resolution: {e}")
     return 1920, 1080  # デフォルト値
 
-def get_appropriate_level(resolution: str, width: Optional[str], height: Optional[str], input_file: Optional[str] = None) -> str:
+# エンコーダ名。フォールバック判定・テストで文字列比較するため定数化する。
+NVENC_ENCODER = "h264_nvenc"
+X264_ENCODER = "libx264"
+
+# NVENC の -cq と libx264 の -crf に公式な換算式は存在しない。実測系の報告は
+# 「同等画質には CQ を CRF より高い数値にする」方向で一致しており(+4〜+5)、
+# ここでは暫定的に +4 を採る。CRF28(UI 既定)→ CQ32。
+# 【要実測】実動画で数本比較して詰めること(docs\CLOSE_ISSUES.md §6-2)。
+NVENC_CQ_OFFSET = 4
+# -cq の値域は 0〜51。0 は「自動」の意味なので下限には使わない。
+NVENC_CQ_MIN = 1
+NVENC_CQ_MAX = 51
+
+
+def crf_to_nvenc_cq(crf: int) -> int:
+    """UI の CRF 値を NVENC の -cq 値へ写像する(クランプ付き)。
+
+    API 側で CRF は 18〜32 に検証済みのため通常はクランプが効かないが、
+    純関数として不正値でも異常な -cq を吐かない保証として入れておく。
+    """
+    return max(NVENC_CQ_MIN, min(NVENC_CQ_MAX, crf + NVENC_CQ_OFFSET))
+
+
+def get_appropriate_level(resolution: str, width: Optional[str], height: Optional[str], source_resolution: Optional[tuple[int, int]] = None) -> str:
     """解像度に応じて適切なH.264レベルを選択"""
-    # 実際の動画解像度を取得
-    actual_width, actual_height = 1920, 1080  # デフォルト値
-    if input_file:
-        actual_width, actual_height = get_video_resolution(input_file)
-    
+    # 実際の動画解像度は、呼び出し元がジョブ全体で1回だけ取得したものを受け取る
+    # (この関数内ではffprobeを呼ばない。1ジョブ1回のプローブという前提を壊さないため)
+    actual_width, actual_height = source_resolution or (1920, 1080)
+
     if resolution == "custom" and width and height:
         try:
             w = int(width)
@@ -481,64 +519,54 @@ def get_appropriate_level(resolution: str, width: Optional[str], height: Optiona
     else:
         return "4.2"  # デフォルト（1080p対応）
 
-def build_ffmpeg_options(crf: int, bitrate: float, resolution: str, width: Optional[str], height: Optional[str], use_gpu: bool = False, input_file: Optional[str] = None) -> list:
+def build_encoder_options(
+    encoder: str,
+    crf: int,
+    resolution: str,
+    width: Optional[str],
+    height: Optional[str],
+    source_resolution: Optional[tuple[int, int]] = None,
+) -> list:
+    """エンコーダを明示してFFmpegのオプション列を組み立てる。
+
+    【重要】この関数はサブプロセスを一切起動しない純関数にすること。
+    ffprobe / ffmpeg -versionを呼び戻すと、1ジョブ1回のプローブという前提が壊れ、
+    CPUフォールバック時にも再プローブが走る（test_ffmpeg_options.pyが検知する）。
+    """
     scale_map = {
         "4320p": "7680:4320", "2160p": "3840:2160", "1440p": "2560:1440",
         "1080p": "1920:1080", "720p": "1280:720", "480p": "854:480", "360p": "640:360"
     }
-    
-    # FFmpegバージョンを確認
-    ffmpeg_version = get_ffmpeg_version()
-    is_modern_ffmpeg = ffmpeg_version != "unknown" and int(ffmpeg_version.split('.')[0]) >= 5
-    
-    # 適切なレベルを選択（入力ファイルの解像度を考慮）
-    appropriate_level = get_appropriate_level(resolution, width, height, input_file)
-    
-    # GPU使用時はNVENCエンコーダーを使用、そうでなければlibx264を使用
-    # GPU使用が要求されていても、実際に利用可能かチェック
-    gpu_available = is_gpu_encoder_available()
-    print(f"GPU use requested: {use_gpu}")
-    print(f"GPU encoder available: {gpu_available}")
-    
-    if use_gpu and gpu_available:
-        print("Using GPU encoder (h264_nvenc)")
-        # NVENCエンコーダーの最適化設定
-        # CRF方式ではなくビットレート制御方式を使用して確実な圧縮を実現
-        # フロントエンドから送信されたビットレート値を使用
-        
-        target_bitrate = f"{bitrate}M"
-        max_bitrate = f"{bitrate * 1.25}M"  # 最大ビットレートは25%増し
-        bufsize = f"{bitrate * 2}M"  # バッファサイズはビットレートの2倍
-        
-        # FFmpeg 4.4.2対応のNVENCオプション（ビットレート制御）
+
+    # 【ログ方針】この関数はエンコーダ選択のログを出さない。CPUフォールバック用の
+    # cpu_fallback_optionsはGPU成功ジョブでも必ず構築されるため、ここでログを出すと
+    # GPUジョブでも「Using CPU encoder (libx264)」が出て、ログでのGPU/CPU判定を誤らせる。
+    # 実際に採用したエンコーダのログはbuild_ffmpeg_options側の1箇所に集約している。
+    if encoder == NVENC_ENCODER:
+        # NVENCエンコーダーの最適化設定（CQ方式。ビットレート制御は廃止）
         # NVENCエンコーダーでは-levelパラメータを指定しない（サポートされていないため）
+        cq = crf_to_nvenc_cq(crf)
         ffmpeg_options = [
             "-vcodec", "h264_nvenc",
-            "-preset", "medium",       # 圧縮効率重視のプリセット
-            "-profile:v", "main",      # メインプロファイル（圧縮効率向上）
-            "-rc", "cbr",              # 固定ビットレート
-            "-b:v", target_bitrate,    # フロントエンドから送信されたビットレート
-            "-maxrate", max_bitrate,   # 最大ビットレート
-            "-bufsize", bufsize,       # バッファサイズ
-            "-g", "30",                # GOPサイズ
-            "-keyint_min", "30",       # 最小キーフレーム間隔
-            "-bf", "3",                # Bフレーム数（圧縮効率向上）
-            "-refs", "3",              # 参照フレーム数
-            "-sc_threshold", "0",      # シーンチェンジ検出無効化（圧縮効率向上）
+            "-preset", "p5",            # 品質寄りの折衷。p1(最速)〜p7(最高品質)。旧mediumはp4相当
+            "-tune", "hq",              # 品質チューニング（旧-tune llは低遅延用でありCQ用途では誤り）
+            "-rc", "vbr",               # CQモードはvbr+cq（旧vbr_hqはSDK v12で非推奨）
+            "-cq", str(cq),
+            "-b:v", "0",                # 必須。省略すると既定2Mが効くバージョンがあり得るための明示
+            "-profile:v", "main",       # メインプロファイル（圧縮効率向上）
+            "-g", "30",                 # GOPサイズ
+            "-keyint_min", "30",        # 最小キーフレーム間隔
+            "-bf", "3",                 # Bフレーム数（圧縮効率向上）
+            "-refs", "3",               # 参照フレーム数
+            "-spatial-aq", "1",         # 空間AQ有効化（平坦部へのビット配分改善）
+            "-rc-lookahead", "20",      # 先読みフレーム数（NVIDIA推奨の10〜20）
         ]
-        # 新しいFFmpegバージョンでのみ使用可能なオプション
-        if is_modern_ffmpeg:
-            ffmpeg_options.extend([
-                "-tune", "ll",          # 低遅延チューニング（ビットレート制御に適している）
-                "-spatial-aq", "0",     # 空間AQを無効化（ビットレート制御時）
-                "-temporal-aq", "0",    # 時間AQを無効化（ビットレート制御時）
-            ])
     else:
-        print("Using CPU encoder (libx264)")
         # CPUエンコーダー（libx264）の設定
+        appropriate_level = get_appropriate_level(resolution, width, height, source_resolution)
         ffmpeg_options = [
-            "-vcodec", "libx264", 
-            "-crf", str(crf), 
+            "-vcodec", "libx264",
+            "-crf", str(crf),
             "-preset", "slow",         # 高品質プリセット
             "-tune", "film",           # フィルム用チューニング（hqの代わり）
             "-profile:v", "high",      # 高プロファイル
@@ -549,7 +577,7 @@ def build_ffmpeg_options(crf: int, bitrate: float, resolution: str, width: Optio
             "-refs", "16",             # 参照フレーム数
             "-bf", "3"                 # Bフレーム数
         ]
-    
+
     vf_option = None
     if resolution == "custom" and width and height:
         try:
@@ -566,6 +594,20 @@ def build_ffmpeg_options(crf: int, bitrate: float, resolution: str, width: Optio
     if vf_option:
         ffmpeg_options.extend(["-vf", vf_option])
     return ffmpeg_options
+
+
+def build_ffmpeg_options(crf: int, resolution: str, width: Optional[str], height: Optional[str], use_gpu: bool = False, source_resolution: Optional[tuple[int, int]] = None) -> list:
+    """使用エンコーダを判定してオプション列を返す。
+
+    【注意】is_gpu_encoder_available()がNVENCのテストエンコード(timeout=30)を
+    subprocessで実行するため、呼び出し側は必ずasyncio.to_thread経由にすること。
+    """
+    gpu_available = is_gpu_encoder_available()
+    print(f"GPU use requested: {use_gpu}")
+    print(f"GPU encoder available: {gpu_available}")
+    encoder = NVENC_ENCODER if (use_gpu and gpu_available) else X264_ENCODER
+    print(f"Using {'GPU' if encoder == NVENC_ENCODER else 'CPU'} encoder ({encoder})")
+    return build_encoder_options(encoder, crf, resolution, width, height, source_resolution)
 
 def delete_after_delay(bucket: str, key: str, delay_seconds: int = 1800):
     def delayed():
@@ -669,17 +711,16 @@ async def get_upload_url_endpoint(
     return {"upload_url": presigned_url, "key": key}
 
 async def run_ffmpeg_job_r2(
-    job_id: str, key: str, filename: str, crf: int, bitrate: float, resolution: str, width: Optional[str], height: Optional[str], use_gpu: bool, client_id: str
+    job_id: str, key: str, filename: str, crf: int, resolution: str, width: Optional[str], height: Optional[str], use_gpu: bool, client_id: str
 ):
     fd_input, temp_input = tempfile.mkstemp(suffix=".mp4")
     fd_output, temp_output = tempfile.mkstemp(suffix=".mp4")
     os.close(fd_input)
     os.close(fd_output)
-    
+
     print(f"=== GPU圧縮デバッグ情報 ===")
     print(f"Job ID: {job_id}")
     print(f"Use GPU: {use_gpu}")
-    print(f"Bitrate: {bitrate}")
     print(f"Input file: {temp_input}")
     print(f"Output file: {temp_output}")
 
@@ -712,29 +753,33 @@ async def run_ffmpeg_job_r2(
             await r2_transfer.download_file(settings.R2_BUCKET_NAME, key, temp_input, callback=prog)
         print(f"ダウンロード完了。ファイルサイズ: {os.path.getsize(temp_input)} bytes")
 
-        # 入力ファイルの解像度を取得してFFmpegオプションを構築
-        # 実際の動画解像度に基づいて適切なレベルを選択
-        # 内部でffprobeをsubprocess.runするためスレッドプールに逃がす
-        actual_width, actual_height = await asyncio.to_thread(get_video_resolution, temp_input)
-        print(f"Actual video resolution: {actual_width}x{actual_height}")
+        # 解像度の取得はジョブ全体でここ1回だけ。build_ffmpeg_options側では再取得しない。
+        source_resolution = await asyncio.to_thread(get_video_resolution, temp_input)
+        print(f"Actual video resolution: {source_resolution[0]}x{source_resolution[1]}")
 
-        # 実際の動画解像度に基づいてFFmpegオプションを構築
-        # 内部でffmpeg/ffprobeをsubprocess.runするためスレッドプールに逃がす
-        ffmpeg_options = await asyncio.to_thread(build_ffmpeg_options, crf, bitrate, resolution, width, height, use_gpu, temp_input)
+        # is_gpu_encoder_available()（NVENCテストエンコード timeout=30）をsubprocessで
+        # 実行するためスレッドプールに逃がす。
+        ffmpeg_options = await asyncio.to_thread(
+            build_ffmpeg_options, crf, resolution, width, height, use_gpu, source_resolution
+        )
+        # NVENC失敗時の再試行用。純関数（サブプロセスなし）なのでto_threadは不要。
+        cpu_fallback_options = build_encoder_options(
+            X264_ENCODER, crf, resolution, width, height, source_resolution
+        )
         print(f"FFmpeg options: {ffmpeg_options}")
-        
+
         # GPU使用が要求されたが利用できない場合の通知
         if use_gpu and "h264_nvenc" not in ffmpeg_options and client_id in clients:
             try:
                 await clients[client_id].send_text(json.dumps({
-                    "type": "warning", 
+                    "type": "warning",
                     "detail": "GPUエンコーダーが利用できません。CPUエンコーダーで処理を続行します。"
                 }))
             except Exception as e:
                 pass
 
         print("FFmpeg処理開始...")
-        await run_ffmpeg_process(temp_input, temp_output, ffmpeg_options, client_id)
+        await run_ffmpeg_process(temp_input, temp_output, ffmpeg_options, cpu_fallback_options, client_id)
         print("FFmpeg処理完了")
         
         # 出力ファイルの確認
@@ -818,6 +863,9 @@ async def compress_video_async_endpoint(
     key: str = Form(...),
     filename: str = Form(...),
     crf: int = Form(28),
+    # 【廃止済み・後方互換のため受理のみ】GPUもCRF指定に統一したため未使用。
+    # 古いフロントのキャッシュがこのフィールドを送ってくる間、422/400にしないために残す。
+    # フロントの送信が完全に無くなったことを確認できたら削除してよい。
     bitrate: float = Form(4.0),
     resolution: str = Form("source"),
     width: Optional[str] = Form(None),
@@ -882,7 +930,7 @@ async def compress_video_async_endpoint(
     
     job_id = uuid.uuid4().hex
     # 実際のFFmpegオプションはrun_ffmpeg_job_r2内で構築される
-    background_tasks.add_task(run_ffmpeg_job_r2, job_id, key, filename, crf, bitrate, resolution, width, height, use_gpu, client_id)
+    background_tasks.add_task(run_ffmpeg_job_r2, job_id, key, filename, crf, resolution, width, height, use_gpu, client_id)
     
     # 成功ログ
     log_security_event(
@@ -913,6 +961,9 @@ async def upload_and_compress_local_endpoint(
     file: UploadFile = File(...),
     filename: str = Form(...),
     crf: int = Form(28),
+    # 【廃止済み・後方互換のため受理のみ】GPUもCRF指定に統一したため未使用。
+    # 古いフロントのキャッシュがこのフィールドを送ってくる間、422/400にしないために残す。
+    # フロントの送信が完全に無くなったことを確認できたら削除してよい。
     bitrate: float = Form(4.0),
     resolution: str = Form("source"),
     width: Optional[str] = Form(None),
@@ -1042,21 +1093,32 @@ async def upload_and_compress_local_endpoint(
             os.remove(temp_input)
             raise HTTPException(status_code=400, detail="Invalid or unsupported video file")
 
-        # 内部でget_ffmpeg_version()とis_gpu_encoder_available()（NVENCテストエンコード、
-        # timeout=30）をsubprocess.runするため、最悪40秒ループを止める。スレッドプールに逃がす。
-        ffmpeg_options = await asyncio.to_thread(build_ffmpeg_options, crf, bitrate, resolution, width, height, use_gpu)
+        # 解像度の取得はジョブ全体でここ1回だけ。build_ffmpeg_options側では再取得しない
+        # （R2経路のrun_ffmpeg_job_r2と同じ扱いに揃える）。
+        source_resolution = await asyncio.to_thread(get_video_resolution, temp_input)
+        print(f"Actual video resolution: {source_resolution[0]}x{source_resolution[1]}")
+
+        # is_gpu_encoder_available()（NVENCテストエンコード timeout=30）をsubprocess.runするため、
+        # 最悪30秒ループを止める。スレッドプールに逃がす。
+        ffmpeg_options = await asyncio.to_thread(
+            build_ffmpeg_options, crf, resolution, width, height, use_gpu, source_resolution
+        )
+        # NVENC失敗時の再試行用。純関数（サブプロセスなし）なのでto_threadは不要。
+        cpu_fallback_options = build_encoder_options(
+            X264_ENCODER, crf, resolution, width, height, source_resolution
+        )
 
         # GPU使用が要求されたが利用できない場合の通知
         if use_gpu and "h264_nvenc" not in ffmpeg_options and client_id in clients:
             try:
                 await clients[client_id].send_text(json.dumps({
-                    "type": "warning", 
+                    "type": "warning",
                     "detail": "GPUエンコーダーが利用できません。CPUエンコーダーで処理を続行します。"
                 }))
             except Exception as e:
                 pass
 
-        await run_ffmpeg_process(temp_input, temp_output, ffmpeg_options, client_id)
+        await run_ffmpeg_process(temp_input, temp_output, ffmpeg_options, cpu_fallback_options, client_id)
         
         # 成功ログ
         log_file_upload_attempt(

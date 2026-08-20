@@ -84,7 +84,6 @@ export default function useVideoProcessing({ token, handleLogout, userInfo, refr
   const [stage, setStage] = useState({ name: "idle", percent: 0, etaSec: null, queuePosition: null });
   const [clientId] = useState(uuidv4());
   const [crf, setCrf] = useState(28);
-  const [bitrate, setBitrate] = useState(4); // ビットレート設定（Mbps）
   const [resolution, setResolution] = useState("source");
   const [customWidth, setCustomWidth] = useState("");
   const [customHeight, setCustomHeight] = useState("");
@@ -94,9 +93,7 @@ export default function useVideoProcessing({ token, handleLogout, userInfo, refr
   const [modifiedFile, setModifiedFile] = useState(null);
   const [modifiedVideoUrl, setModifiedVideoUrl] = useState("");
   const [useGPU, setUseGPU] = useState(true);
-  const [videoDuration, setVideoDuration] = useState(0);
-  const [durationAvailable, setDurationAvailable] = useState(true);
-  
+
   // 共有機能の状態
   const [compressedR2Key, setCompressedR2Key] = useState("");
   const [shareUrl, setShareUrl] = useState("");
@@ -284,67 +281,17 @@ export default function useVideoProcessing({ token, handleLogout, userInfo, refr
     return originalSize * factor;
   };
 
-  // GPU使用時のビットレート制御に基づく推定サイズ計算
-  const estimateCompressedSizeGPU = (originalSize, bitrateValue, duration = null) => {
-    // 動画の長さが不明な場合は、一般的な動画の長さ（3分）を仮定
-    const estimatedDuration = duration || 180; // 秒単位
-    // ビットレート（Mbps）をバイトに変換して推定サイズを計算
-    const estimatedSize = (bitrateValue * 1000000 * estimatedDuration) / 8; // ビットをバイトに変換
-    return estimatedSize;
-  };
+  // 推定サイズの表示幅。中心値（estimateCompressedSize）に掛ける下限/上限の係数。
+  // 実測から求めた値ではなく、「動画の内容（動きの多さ・ノイズ量）で数割ぶれる」ことを
+  // 利用者に伝えるための目安。GPU/CPU で同じ幅を使う（理由は docs\CLOSE_ISSUES.md §6-6）。
+  const SIZE_ESTIMATE_LOW_FACTOR = 0.6;
+  const SIZE_ESTIMATE_HIGH_FACTOR = 1.4;
 
-  // 動画の解像度と長さを取得してビットレートのデフォルト値を設定
-  const getVideoDimensions = (file) => {
-    return new Promise((resolve) => {
-      const video = document.createElement('video');
-      video.preload = 'metadata';
-
-      // この URL は selectFile が管理する originalVideoUrl とは別に、
-      // メタデータ読み取り専用で使い捨て発行するものなので、
-      // 読み終えたら（成功・失敗いずれでも）ここで自分で revoke する。
-      // これを怠ると、動画を選択するたびに1本分の blob URL がリークし続ける。
-      video.onloadedmetadata = () => {
-        const width = video.videoWidth;
-        const height = video.videoHeight;
-        const duration = video.duration;
-        const isDurationAvailable = !isNaN(duration) && duration > 0 && isFinite(duration);
-
-        // 解像度に応じたデフォルトビットレート設定
-        let defaultBitrate;
-        if (width >= 3840 || height >= 2160) {  // 4K
-          defaultBitrate = 8;
-        } else if (width >= 1920 || height >= 1080) {  // 1080p
-          defaultBitrate = 4;
-        } else if (width >= 1280 || height >= 720) {  // 720p
-          defaultBitrate = 3;
-        } else {  // 480p以下
-          defaultBitrate = 1;
-        }
-
-        URL.revokeObjectURL(video.src);
-        resolve({
-          width,
-          height,
-          duration: isDurationAvailable ? duration : 180,
-          defaultBitrate,
-          isDurationAvailable
-        });
-      };
-
-      video.onerror = () => {
-        // エラーの場合はデフォルト値を返す
-        URL.revokeObjectURL(video.src);
-        resolve({
-          width: 1920,
-          height: 1080,
-          duration: 180,
-          defaultBitrate: 4,
-          isDurationAvailable: false
-        });
-      };
-
-      video.src = URL.createObjectURL(file);
-    });
+  // 判定不能なときは null を返す（NaN / Infinity を画面に出さないため）。
+  const estimateCompressedSizeRange = (originalSize, crfValue) => {
+    const center = estimateCompressedSize(originalSize, crfValue);
+    if (!Number.isFinite(center) || center <= 0) return null;
+    return { min: center * SIZE_ESTIMATE_LOW_FACTOR, max: center * SIZE_ESTIMATE_HIGH_FACTOR };
   };
 
   // userInfo からアップロード容量を取り出す。
@@ -408,7 +355,6 @@ export default function useVideoProcessing({ token, handleLogout, userInfo, refr
         uploadFormData.append("file", file);
         uploadFormData.append("filename", file.name);
         uploadFormData.append("crf", crf);
-        uploadFormData.append("bitrate", bitrate);
         uploadFormData.append("resolution", resolution);
         if (resolution === "custom") {
           if (!customWidth || !customHeight || parseInt(customWidth, 10) <= 0 || parseInt(customHeight, 10) <= 0) {
@@ -490,7 +436,6 @@ export default function useVideoProcessing({ token, handleLogout, userInfo, refr
       const compressFormData = new FormData();
       compressFormData.append("filename", file.name);
       compressFormData.append("crf", crf);
-      compressFormData.append("bitrate", bitrate);
       compressFormData.append("resolution", resolution);
       if (resolution === "custom") {
         if (!customWidth || !customHeight || parseInt(customWidth, 10) <= 0 || parseInt(customHeight, 10) <= 0) {
@@ -703,7 +648,6 @@ export default function useVideoProcessing({ token, handleLogout, userInfo, refr
     compressedFileSize, setCompressedFileSize,
     progress, setProgress,
     crf, setCrf,
-    bitrate, setBitrate,
     resolution, setResolution,
     customWidth, setCustomWidth,
     customHeight, setCustomHeight,
@@ -713,15 +657,12 @@ export default function useVideoProcessing({ token, handleLogout, userInfo, refr
     modifiedFile, setModifiedFile,
     modifiedVideoUrl, setModifiedVideoUrl,
     useGPU, setUseGPU,
-    videoDuration, setVideoDuration,
-    durationAvailable, setDurationAvailable,
     handleUpload,
     downloadCompressedVideo,
     formatSize,
     reductionRate,
     estimateCompressedSize,
-    estimateCompressedSizeGPU,
-    getVideoDimensions,
+    estimateCompressedSizeRange,
     // 共有機能
     compressedR2Key,
     shareUrl,

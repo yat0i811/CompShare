@@ -22,7 +22,6 @@ export default function Home() {
     progress, setProgress,
     stage,
     crf, setCrf,
-    bitrate, setBitrate,
     resolution, setResolution,
     customWidth, setCustomWidth,
     customHeight, setCustomHeight,
@@ -34,11 +33,8 @@ export default function Home() {
     formatSize,
     reductionRate,
     estimateCompressedSize,
-    estimateCompressedSizeGPU,
-    getVideoDimensions,
+    estimateCompressedSizeRange,
     useGPU, setUseGPU,
-    videoDuration, setVideoDuration,
-    durationAvailable, setDurationAvailable,
     // 共有機能
     compressedR2Key,
     shareUrl,
@@ -71,7 +67,7 @@ export default function Home() {
 
 
 
-  const handleFileChange = async (event) => {
+  const handleFileChange = (event) => {
     const selectedFile = event.target.files[0];
     if (selectedFile) {
       // selectFile() が file / originalVideoUrl / originalFileSize をまとめて更新し、
@@ -79,21 +75,6 @@ export default function Home() {
       selectFile(selectedFile);
       // 圧縮結果・共有URL等、前回選択分の残骸を一括リセットする。
       resetStates();
-
-      // 動画の解像度と長さを取得してビットレートのデフォルト値を設定
-      if (selectedFile.type.startsWith("video/")) {
-        try {
-          const { width, height, duration, defaultBitrate, isDurationAvailable } = await getVideoDimensions(selectedFile);
-          setBitrate(defaultBitrate);
-          setVideoDuration(duration);
-          setDurationAvailable(isDurationAvailable);
-        } catch (error) {
-          console.warn("動画の解像度取得に失敗しました:", error);
-          setBitrate(4); // デフォルト値
-          setVideoDuration(180); // デフォルトの長さ
-          setDurationAvailable(false);
-        }
-      }
     }
   };
 
@@ -194,43 +175,31 @@ export default function Home() {
               </p>
             )}
           </div>
-          {useGPU ? (
-            <div className="control">
-              <label>ビットレート（CBR）: {bitrate} Mbps</label>
-              <input 
-                type="range" 
-                min="1" 
-                max="20" 
-                step="0.5"
-                value={bitrate} 
-                onChange={(e) => setBitrate(parseFloat(e.target.value))} 
-              />
-              <p className="hint">ビットレートが低いほどファイルサイズが小さくなりますが、画質も低下します。</p>
-            </div>
-          ) : (
-            <div className="control">
-              <label>画質（CRF）: {crf}</label>
-              <input 
-                type="range" 
-                min="18" 
-                max="32" 
-                value={crf} 
-                onChange={(e) => setCrf(parseInt(e.target.value, 10))} 
-              />
-              <p className="hint">CRF値が高いほどファイルサイズが小さくなりますが、画質も低下します。</p>
-            </div>
-          )}
-          {file && (
-            <p className="hint">
-              推定圧縮後サイズ: {useGPU 
-                ? (durationAvailable 
-                    ? formatSize(estimateCompressedSizeGPU(file.size, bitrate, videoDuration))
-                    : "動画の長さが取得できません（ビットレート: " + bitrate + " Mbps）"
-                  )
-                : formatSize(estimateCompressedSize(file.size, crf))
-              }
-            </p>
-          )}
+          <div className="control">
+            <label>画質（CRF）: {crf}</label>
+            <input
+              type="range"
+              min="18"
+              max="32"
+              value={crf}
+              onChange={(e) => setCrf(parseInt(e.target.value, 10))}
+            />
+            <p className="hint">CRF値が高いほどファイルサイズが小さくなりますが、画質も低下します。</p>
+          </div>
+          {file && (() => {
+            const range = estimateCompressedSizeRange(file.size, crf);
+            return (
+              <>
+                <p className="hint">
+                  推定圧縮後サイズ: {range ? `およそ ${formatSize(range.min)} 〜 ${formatSize(range.max)}` : "-"}
+                </p>
+                <p className="hint">動画の内容（動きの多さ）により変動します。</p>
+                {useGPU && (
+                  <p className="hint">GPU（NVENC）では、同じ画質指定でもファイルサイズがCPUと異なる場合があります。</p>
+                )}
+              </>
+            );
+          })()}
           <div className="control">
             <label>解像度:</label>
             <select value={resolution} onChange={(e) => setResolution(e.target.value)}>
