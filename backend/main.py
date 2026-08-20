@@ -16,15 +16,21 @@ import aiosqlite
 from passlib.hash import bcrypt
 from routers import auth_router, admin_router, video_router
 from core.config import settings
+from core import r2_transfer
 from middlewares import ConditionalUploadLimitMiddleware, RateLimitMiddleware
-from db.database import lifespan
+from db.database import lifespan as db_lifespan
 from db import crud
 from db.crud import UserCreate
 import asyncio
+from contextlib import asynccontextmanager
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-load_dotenv()
+# override=Falseを明示する（python-dotenvの既定値でもあるが、テスト時にconftest.pyが
+# 先にos.environへダミー値を設定している前提を壊さないよう意図的に固定する）。
+# これによりtest_lifespan.pyがmainをimportしても、.envの値でos.environが上書きされず
+# 実R2の設定に触れない。
+load_dotenv(override=False)
 SECRET_KEY = os.getenv("SECRET_KEY")
 CORRECT_PASSWORD = os.getenv("CORRECT_PASSWORD")
 ALGORITHM = "HS256"
@@ -45,6 +51,79 @@ if not R2_ACCESS_KEY_ID:
     raise RuntimeError("R2_ACCESS_KEY_ID is not set in .env")
 if not R2_SECRET_ACCESS_KEY:
     raise RuntimeError("R2_SECRET_ACCESS_KEY is not set in .env")
+
+@asynccontextmanager
+async def lifespan(app):
+    """DB 初期化とスケジューラの起動・停止をまとめて担う。
+
+    【重要】以前は DB 初期化だけを lifespan に渡し、スケジューラは
+    @app.on_event("startup") で起動していたが、**これは一度も実行されていなかった**。
+    Starlette は lifespan が None のときだけ on_startup を実行する _DefaultLifespan を
+    使うため、lifespan を渡した時点で on_event 系のハンドラは無視される。
+    その結果「期限切れ共有の削除」「未共有圧縮動画の削除」が黙って停止していた。
+    スケジューラの起動は必ずこの lifespan の内側に置くこと。
+    """
+    # db.database.lifespan は素の async generator 関数なので、
+    # async with で使うために asynccontextmanager で包む。
+    async with asynccontextmanager(db_lifespan)(app):
+        print("アプリケーションを開始しています...")
+
+        # クリーンアップの起動に失敗しても、動画圧縮などの本来機能まで巻き添えで
+        # 落とさない。ただし「黙って停止していた」過去があるため、失敗は必ず目立つ形で残す。
+        # 例: tzdata が無いと CronTrigger(timezone="Asia/Tokyo") が
+        # ZoneInfoNotFoundError を投げ、以前はこれで起動不能になった。
+        scheduler_started = False
+        try:
+            # 期限切れ動画のクリーンアップを毎日午前0時に実行（日本時間）
+            scheduler.add_job(
+                cleanup_expired_videos,
+                trigger=CronTrigger(hour=0, minute=0, timezone="Asia/Tokyo"),
+                id="cleanup_expired_videos",
+                replace_existing=True
+            )
+
+            # APSchedulerで1時間ごとに未共有圧縮動画のクリーンアップも実行
+            scheduler.add_job(
+                cleanup_unshared_compressed_videos,
+                trigger=CronTrigger(minute=0),
+                id="cleanup_unshared_compressed_videos",
+                replace_existing=True
+            )
+
+            scheduler.start()
+            scheduler_started = True
+            print("スケジューラーを開始しました。")
+
+            # 開始時に一度クリーンアップを実行
+            await cleanup_expired_videos()
+        except Exception as e:
+            import traceback
+            print(f"[CRITICAL] スケジューラーの起動に失敗しました: {e!r}")
+            print("[CRITICAL] 自動クリーンアップは動作しません。R2にゴミが溜まり続けます。")
+            traceback.print_exc()
+
+        try:
+            yield
+        finally:
+            print("アプリケーションを終了しています...")
+            # スケジューラの停止とR2転送の停止はそれぞれ独立にtry/exceptで囲む。
+            # 片方の失敗がもう片方の停止処理を妨げないようにするため
+            # （scheduler_startedがFalseでもr2_transfer.shutdown()は必ず実行する）。
+            if scheduler_started:
+                try:
+                    scheduler.shutdown()
+                    print("スケジューラーを停止しました。")
+                except Exception as e:
+                    print(f"[WARNING] スケジューラーの停止に失敗しました: {e!r}")
+
+            try:
+                # 進行中のR2転送をキャンセルしてスレッドプール/TransferManagerを停止する。
+                # 詳細な停止シーケンスはcore/r2_transfer.pyのモジュールdocstring参照。
+                await r2_transfer.shutdown()
+                print("R2転送の停止処理が完了しました。")
+            except Exception as e:
+                print(f"[WARNING] R2転送の停止処理に失敗しました: {e!r}")
+
 
 app = FastAPI(lifespan=lifespan)
 
@@ -105,6 +184,23 @@ app.include_router(video_router.router, tags=["video"])
 async def read_root():
     return {"message": "Video Compression Service API"}
 
+@app.get("/healthz")
+async def healthz():
+    """プラットフォーム標準の公開ヘルスチェック（APP_STANDARD.md 参照）。
+
+    リバースプロキシ配下のバックエンドは <prefix>/healthz で公開する規約のため、
+    外部からは https://compshare.yat0i.com/be/healthz で到達する。
+    """
+    return {"status": "ok"}
+
+@app.get("/health")
+async def health_check():
+    """旧パス。デプロイ途中の窓で監視が 404 を踏まないよう1リリースだけ残す。
+
+    StatusBoard と compose の healthcheck が /healthz へ移行し切ったら削除すること。
+    """
+    return {"status": "ok"}
+
 @app.get("/favicon.ico")
 async def favicon():
     """Favicon要求に対する空のレスポンス"""
@@ -115,32 +211,43 @@ async def favicon_options():
     """Favicon要求のOPTIONSに対するレスポンス"""
     return Response(status_code=204)
 
-@app.post("/login")
-async def login(username: str = Form(...), password: str = Form(...)):
-    user = await crud.get_user_by_username(username)
-    if not user:
-        raise HTTPException(status_code=401, detail="ユーザーが見つかりません")
-    
-    if not bcrypt.verify(password, user["hashed_password"]):
-        raise HTTPException(status_code=401, detail="パスワードが正しくありません")
-
-    if not user["is_approved"] and not user["is_admin"]:
-        raise HTTPException(status_code=403, detail="アカウントが承認されていません")
-
-    token_data = {"sub": user["username"], "is_admin": user["is_admin"]}
-    token = auth_router.create_access_token(token_data)
-    return JSONResponse(content={"token": token})
+# 旧 @app.post("/login") はここにあったが削除した。
+# auth_router の /auth/login と重複しており、以下の問題があった:
+#   - ユーザー不在とパスワード不一致で異なるメッセージを返すためユーザー列挙が可能
+#   - log_authentication_event を呼ばないため認証失敗が記録に残らない
+# フロントは constants.js:26 のとおり /auth/login のみを使用している。
 
 if not os.path.exists(settings.UPLOAD_DIR):
     os.makedirs(settings.UPLOAD_DIR)
 
 # R2クライアントの作成
+# max_pool_connectionsの根拠はcore/r2_transfer.pyのモジュールdocstring参照
+# （4:転送request + 2:転送submission + 4:R2 executor上のhead/get/delete + 6:ストリーミング余裕 = 16）。
 r2_client = boto3.client(
     's3',
     endpoint_url=R2_ENDPOINT_URL,
     aws_access_key_id=R2_ACCESS_KEY_ID,
     aws_secret_access_key=R2_SECRET_ACCESS_KEY,
-    config=boto3.session.Config(signature_version="s3v4"),
+    config=Config(
+        signature_version="s3v4",
+        max_pool_connections=settings.R2_MAX_POOL_CONNECTIONS,
+        # botocoreの既定はconnect_timeout=60 / read_timeout=60 / retries=legacy(最大5試行)。
+        # run_r2に載せたhead/get/deleteはキャンセルできないため（core/r2_transfer.py参照）、
+        # R2が無応答だと既定のままではワーカー1本が分単位で塞がり、非daemonワーカーを
+        # atexitでjoinする都合上プロセス終了までブロックし得る。
+        # 値を絞ることでワーカー占有の最悪値が有界になる（read_timeout × 合計試行回数のオーダー）。
+        # クリーンアップ系は毎時/毎日のcronが再試行してくれるので、リトライを厚くするより
+        # 早く諦めて枠を返すほうが全体の応答性に効く。
+        connect_timeout=10,
+        # ソケットの1回のread単位に効く上限であり、転送全体の制限時間ではない。
+        # 大容量転送でもチャンクが届き続ける限りタイムアウトしない（＝無応答時間の上限）。
+        read_timeout=30,
+        # max_attemptsは"追加リトライ回数"であり、合計試行はN+1になる（=1なら2試行）。
+        # botocoreの実装がそう解釈する（botocore/args.pyに
+        # "max_attempts means total retries so we have to add one"とある。実測確認済み）。
+        # 以前の2は「2試行」のつもりだったが実際は3試行で、占有の最悪値が想定より5割長かった。
+        retries={"max_attempts": 1, "mode": "standard"},
+    ),
     region_name="auto"
 )
 
@@ -148,6 +255,8 @@ r2_client = boto3.client(
 video_router.init_r2_client(r2_client)
 # admin_routerにR2クライアントを設定
 admin_router.init_r2_client(r2_client)
+# R2転送専用のスレッドプール/TransferManagerを初期化する（core/r2_transfer.py参照）
+r2_transfer.init(r2_client)
 
 # 期限切れ動画のクリーンアップタスク
 async def cleanup_expired_videos():
@@ -163,21 +272,29 @@ async def cleanup_expired_videos():
             return
             
         print(f"期限切れの動画 {len(expired_videos)} 個を処理中...")
-        
-        # R2から対応するファイルを削除
-        for video in expired_videos:
-            try:
-                if r2_client:
+
+        if not r2_client:
+            print("R2クライアントが初期化されていません")
+            return
+
+        # boto3のdelete_objectは同期I/O。AsyncIOSchedulerはアプリと同じイベントループで
+        # ジョブを実行するため、async関数内で直接呼ぶと件数に比例してループが止まり、
+        # 全リクエストが応答不能になる。削除ループ全体をひとつの同期関数にまとめて
+        # スレッドプールで実行する（1件ずつto_threadを挟むより往復が少なく確実）。
+        def _delete_expired_objects_from_r2(videos):
+            for video in videos:
+                try:
                     r2_client.delete_object(Bucket=R2_BUCKET_NAME, Key=video["r2_key"])
                     print(f"R2から削除: {video['r2_key']}")
-                else:
-                    print("R2クライアントが初期化されていません")
-            except Exception as e:
-                if hasattr(e, 'response') and e.response.get('Error', {}).get('Code') == '404':
-                    print(f"R2にファイルが存在しません: {video['r2_key']}")
-                else:
-                    print(f"R2削除エラー: {video['r2_key']}, {e}")
-                    
+                except Exception as e:
+                    if hasattr(e, 'response') and e.response.get('Error', {}).get('Code') == '404':
+                        print(f"R2にファイルが存在しません: {video['r2_key']}")
+                    else:
+                        print(f"R2削除エラー: {video['r2_key']}, {e}")
+
+        # R2呼び出しは専用エグゼキュータで実行する（既定エグゼキュータの枠を消費しない）
+        await r2_transfer.run_r2(_delete_expired_objects_from_r2, expired_videos)
+
         print(f"期限切れ動画のクリーンアップ完了: {len(expired_videos)} 個のファイルを処理")
         
     except Exception as e:
@@ -189,61 +306,61 @@ async def cleanup_unshared_compressed_videos():
     try:
         print("未共有圧縮動画のクリーンアップを開始...")
         now = datetime.now(timezone.utc)
-        deleted_count = 0
-        # R2のcompressed/ディレクトリ内のファイル一覧を取得
-        paginator = r2_client.get_paginator('list_objects_v2')
-        for page in paginator.paginate(Bucket=R2_BUCKET_NAME, Prefix="compressed/"):
-            for obj in page.get('Contents', []):
-                key = obj['Key']
-                last_modified = obj['LastModified']
-                # 3時間以上前か判定
-                if (now - last_modified).total_seconds() < 10800:
-                    continue
-                # DBにr2_keyが存在するかチェック
-                async with aiosqlite.connect(settings.DB_PATH) as db:
-                    cursor = await db.execute("SELECT 1 FROM shared_videos WHERE r2_key = ?", (key,))
-                    exists = await cursor.fetchone()
-                if exists:
-                    continue  # 共有リンク作成済み
-                # 削除実行
+
+        if not r2_client:
+            print("R2クライアントが初期化されていません")
+            return
+
+        # botocoreのpaginatorは遅延評価で、1ページ進むごとに同期のネットワーク呼び出しを行う。
+        # このジョブはAsyncIOScheduler（アプリと同じイベントループ）で毎時実行されるため、
+        # async関数内でそのまま回すとオブジェクト数に比例してループが凍結する。
+        # 走査ループ全体をひとつの同期関数にまとめてスレッドプールで実行する。
+        def _list_stale_compressed_keys():
+            stale_keys = []
+            paginator = r2_client.get_paginator('list_objects_v2')
+            for page in paginator.paginate(Bucket=R2_BUCKET_NAME, Prefix="compressed/"):
+                for obj in page.get('Contents', []):
+                    # 3時間以上前か判定
+                    if (now - obj['LastModified']).total_seconds() < 10800:
+                        continue
+                    stale_keys.append(obj['Key'])
+            return stale_keys
+
+        # R2呼び出しは専用エグゼキュータで実行する（既定エグゼキュータの枠を消費しない）
+        stale_keys = await r2_transfer.run_r2(_list_stale_compressed_keys)
+
+        if not stale_keys:
+            print("未共有圧縮動画のクリーンアップ完了: 0 個のファイルを削除")
+            return
+
+        # aiosqliteの呼び出しはイベントループ上で完結させる必要があるため、
+        # R2の走査（スレッド側）とDB参照（ループ側）を分離する。
+        # キーごとのクエリではなく共有済みキーを1クエリでまとめて取得する。
+        async with aiosqlite.connect(settings.DB_PATH) as db:
+            cursor = await db.execute("SELECT r2_key FROM shared_videos")
+            shared_keys = {row[0] for row in await cursor.fetchall()}
+
+        target_keys = [key for key in stale_keys if key not in shared_keys]
+
+        # 削除も同期I/Oのため、ループ全体をまとめてスレッドプールで実行する
+        def _delete_unshared_objects(keys):
+            deleted = 0
+            for key in keys:
                 try:
                     r2_client.delete_object(Bucket=R2_BUCKET_NAME, Key=key)
                     print(f"未共有・3時間経過ファイル削除: {key}")
-                    deleted_count += 1
+                    deleted += 1
                 except Exception as e:
                     print(f"削除失敗: {key}, {e}")
+            return deleted
+
+        # R2呼び出しは専用エグゼキュータで実行する（既定エグゼキュータの枠を消費しない）
+        deleted_count = await r2_transfer.run_r2(_delete_unshared_objects, target_keys)
         print(f"未共有圧縮動画のクリーンアップ完了: {deleted_count} 個のファイルを削除")
     except Exception as e:
         print(f"未共有圧縮動画クリーンアップでエラー: {e}")
 
 # スケジューラーの設定
+# 起動・停止は上部の lifespan が行う。
+# @app.on_event("startup") は lifespan と併用すると実行されないため使用しないこと。
 scheduler = AsyncIOScheduler()
-
-@app.on_event("startup")
-async def startup_event():
-    """アプリケーション開始時の処理"""
-    print("アプリケーションを開始しています...")
-    
-    # 期限切れ動画のクリーンアップを毎日午前0時に実行（日本時間）
-    scheduler.add_job(
-        cleanup_expired_videos,
-        trigger=CronTrigger(hour=0, minute=0, timezone="Asia/Tokyo"),
-        id="cleanup_expired_videos",
-        replace_existing=True
-    )
-    
-    # 開始時に一度クリーンアップを実行
-    await cleanup_expired_videos()
-    
-    # APSchedulerで1時間ごとに未共有圧縮動画のクリーンアップも実行
-    scheduler.add_job(cleanup_unshared_compressed_videos, CronTrigger(minute=0))
-    
-    scheduler.start()
-    print("スケジューラーを開始しました。")
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """アプリケーション終了時の処理"""
-    print("アプリケーションを終了しています...")
-    scheduler.shutdown()
-    print("スケジューラーを停止しました。")

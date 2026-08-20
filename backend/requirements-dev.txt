@@ -1,0 +1,26 @@
+# 開発・テスト専用の依存。本番イメージには入れない。
+#
+# requirements.txt に混ぜないこと:
+#   Dockerfile.backend は requirements.txt だけを pip install するため、
+#   ここに書いたものは本番イメージに焼き込まれない（イメージを太らせない）。
+#   .dockerignore でこのファイル自体もビルドコンテキストから除外している。
+#
+# 使い方（backend ディレクトリで、requirements.txt を先に入れてから）:
+#   pip install -r requirements.txt
+#   pip install -r requirements-dev.txt
+#   python -m pytest -v
+#   ruff check .
+#
+# 注意: テストは routers.video_router 等を import するため、
+# requirements.txt 側の依存（fastapi / boto3 / python-magic など）も併せて必要。
+# .env は不要（conftest.py がダミー値を注入する）。
+pytest
+# asyncio_mode="auto"（設定は pyproject.toml）。async def のテストに毎回マーカーを付けない
+pytest-asyncio
+# async def 内の同期I/O検知（ASYNCルール群。CLOSE_ISSUES §4-1 の再発防止）
+ruff
+# Windows開発機ではpython-magicがlibmagicのDLLを見つけられずimport magicが失敗するため。
+# 同じmagicパッケージをDLL同梱版で上書きするので、requirements.txtを先に入れてから
+# requirements-dev.txtを入れる順序が必要（逆順だとpython-magicがmagicを上書きしてしまう）。
+# Linux/コンテナ（本番）では入らない（sys_platform=="win32"限定）。
+python-magic-bin; sys_platform == "win32"

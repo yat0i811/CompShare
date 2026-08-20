@@ -1,5 +1,8 @@
 # --- ENV file ---
-backend/.env
+# ワイルドカードでバックアップ（.env.bak-*）等の派生ファイルも除外する。
+# .env.example は値がダミーのテンプレートなので追跡対象に含める（APP_STANDARD.md 必須ファイル）。
+backend/.env*
+!backend/.env.example
 frontend/.env
 
 # --- DB ---
@@ -7,7 +10,13 @@ backend/db_data/
 
 # --- Node modules ---
 frontend/node_modules/
+frontend/.next/
 
 # --- Logs ---
 backend/logs/
-backend/test_security.py
+
+# --- Python cache ---
+# pytest/ruff の導入で backend/ 配下にキャッシュが生成されるようになった。
+__pycache__/
+.pytest_cache/
+.ruff_cache/

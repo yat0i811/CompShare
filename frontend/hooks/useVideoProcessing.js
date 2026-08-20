@@ -14,8 +14,63 @@ import {
     PUBLIC_DOWNLOAD_URL
 } from '../utils/constants';
 
+/**
+ * R2 の署名付き URL へ PUT する。送信進捗を onProgress(percent, etaSec) で通知する。
+ *
+ * fetch を使わない理由: fetch は送信（アップロード）の進捗を取得できないため、
+ * 1.2GB の送信中ずっと 0% のままになり「固まった」ように見える。
+ *
+ * 実装上の注意（いずれも守らないと 400/403 になる）:
+ *  - Content-Type を setRequestHeader で明示しないこと。
+ *    署名は Params={'Bucket','Key'} のみで作られており ContentType は SignedHeaders に
+ *    入っていない。File を send() に渡せば file.type が自動付与され、未署名ヘッダとして
+ *    無視される。明示指定すると将来 Params に ContentType を足したとき不一致で 403 になる。
+ *  - Authorization ヘッダを付けないこと。署名済み URL に付けると SigV4 の二重認証で 400。
+ *  - timeout は 0（無制限）のまま。大容量の送信に既定タイムアウトを掛けない。
+ */
+function uploadToR2(url, file, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("PUT", url, true);
+    xhr.timeout = 0;
+
+    const started = Date.now();
+    xhr.upload.onprogress = (e) => {
+      if (!e.lengthComputable) return;
+      const percent = Math.min(Math.floor((e.loaded / e.total) * 100), 99);
+      const elapsed = (Date.now() - started) / 1000;
+      const etaSec = e.loaded > 0 && elapsed > 0
+        ? Math.round((elapsed * (e.total - e.loaded)) / e.loaded)
+        : null;
+      onProgress(percent, etaSec);
+    };
+
+    // upload.onload（送信完了）と xhr.onload（応答受信）は別物。
+    // 大容量では両者の間に無視できない待ちが生じるので、ここを繋がないと
+    // 100% 表示のまま止まって見える。
+    xhr.upload.onload = () => onProgress(100, 0);
+
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve();
+      } else if (xhr.status === 403) {
+        reject(new Error("アップロードURLの有効期限が切れました。もう一度お試しください。"));
+      } else {
+        reject(new Error(`R2へのファイルアップロードに失敗しました（HTTP ${xhr.status}）。`));
+      }
+    };
+
+    // onerror は CORS 失敗時に詳細を渡さない仕様なので、原因を断定しない文言にする
+    xhr.onerror = () => reject(new Error("R2への送信に失敗しました（ネットワークまたはCORS設定を確認してください）。"));
+    xhr.ontimeout = () => reject(new Error("R2への送信がタイムアウトしました。"));
+    xhr.onabort = () => reject(new Error("R2への送信が中断されました。"));
+
+    xhr.send(file);
+  });
+}
+
 // Custom hook for video processing logic
-export default function useVideoProcessing({ token, handleLogout, userInfo }) {
+export default function useVideoProcessing({ token, handleLogout, userInfo, refreshUserInfo }) {
   const [file, setFile] = useState(null);
   const [originalVideoUrl, setOriginalVideoUrl] = useState("");
   const [originalFileSize, setOriginalFileSize] = useState(0);
@@ -23,6 +78,10 @@ export default function useVideoProcessing({ token, handleLogout, userInfo }) {
   const [compressedFileName, setCompressedFileName] = useState("");
   const [compressedFileSize, setCompressedFileSize] = useState(0);
   const [progress, setProgress] = useState(0);
+  // 処理段階。所要時間が桁違いの3段階を1本のバーに統合すると、
+  // 20分間1%も動かない区間ができて「固まった」ように見えるため、段階ごとに表示する。
+  // name: idle | sending | starting | queued | fetching | encoding | storing | done | error | disconnected
+  const [stage, setStage] = useState({ name: "idle", percent: 0, etaSec: null, queuePosition: null });
   const [clientId] = useState(uuidv4());
   const [crf, setCrf] = useState(28);
   const [bitrate, setBitrate] = useState(4); // ビットレート設定（Mbps）
@@ -46,8 +105,62 @@ export default function useVideoProcessing({ token, handleLogout, userInfo }) {
   const [shareMessage, setShareMessage] = useState("");
 
   const ws = useRef(null);
+  // サーバー由来の段階にいる間、一定時間メッセージが来なければ無応答とみなすための時刻。
+  const lastServerMessageAt = useRef(0);
+  // 直近に発行した元動画の blob URL。差し替え時とアンマウント時に必ず revoke する。
+  // revoke を怠ると選択のたびにファイル1本分のリソースがタブ内に滞留する
+  // （ブラウザがタブを閉じるまで元動画の実体をメモリ/ディスクに保持し続けるため）。
+  const originalObjectUrlRef = useRef("");
+  // 直近に発行した「圧縮結果」の blob URL（localhost 経路のみ。外部環境の done では
+  // サーバー由来の http URL が入るので、その場合ここは空のままにする）。
+  // 元動画側と同じく、差し替え時・resetStates 時・アンマウント時に必ず revoke する。
+  // 圧縮結果は元動画と同程度のサイズがあるため、revoke を怠ると圧縮のたびに
+  // タブ内へ1本分が滞留する。
+  const compressedObjectUrlRef = useRef("");
+
+  // 圧縮結果の blob URL を解放する。解放済みかどうかを ref で一元管理し、
+  // 二重 revoke（無害だが状態が追えなくなる）を避ける。
+  const releaseCompressedObjectUrl = () => {
+    if (compressedObjectUrlRef.current) {
+      URL.revokeObjectURL(compressedObjectUrlRef.current);
+      compressedObjectUrlRef.current = "";
+    }
+  };
+
+  // サーバー由来の段階（＝進捗がサーバーから push される段階）かどうか。
+  const SERVER_STAGES = ["starting", "queued", "fetching", "encoding", "storing"];
 
   const isExternal = typeof window !== "undefined" && !isLocalhost();
+
+  // ファイル選択の唯一の入り口。file / originalVideoUrl / originalFileSize の3つを
+  // 常に整合させて更新する（バラバラに setFile だけ呼ぶと元動画カードのサイズ表示が
+  // 古いファイルのままになる、といった不整合を防ぐ）。
+  const selectFile = (nextFile) => {
+    if (originalObjectUrlRef.current) URL.revokeObjectURL(originalObjectUrlRef.current);
+    originalObjectUrlRef.current = "";
+
+    if (!nextFile) {
+      setFile(null);
+      setOriginalVideoUrl("");
+      setOriginalFileSize(0);
+      return;
+    }
+
+    const url = URL.createObjectURL(nextFile);
+    originalObjectUrlRef.current = url;
+    setFile(nextFile);
+    setOriginalVideoUrl(url);
+    setOriginalFileSize(nextFile.size);
+  };
+
+  useEffect(() => {
+    // アンマウント時のみ。selectFile 自体は差し替え時に前の URL を revoke しているので、
+    // ここでは「最後に残っている1本」だけを片付ければよい。
+    return () => {
+      if (originalObjectUrlRef.current) URL.revokeObjectURL(originalObjectUrlRef.current);
+      releaseCompressedObjectUrl();
+    };
+  }, []);
   // const MAX_FILE_SIZE = 1000 * 1024 * 1024; // この固定値は使用しないか、ユーザー容量と併用する形にする
 
   useEffect(() => {
@@ -66,20 +179,40 @@ export default function useVideoProcessing({ token, handleLogout, userInfo }) {
     ws.current.onmessage = (e) => {
       try {
         const data = JSON.parse(e.data);
+        lastServerMessageAt.current = Date.now();
         if (data.type === "done") {
+          // サーバー由来の URL で置き換えるので、localhost 経路で発行済みの
+          // blob URL が残っていればここで解放する（refのみを触るので、
+          // このクロージャが古いレンダーの関数を捕まえていても正しく動く）。
+          releaseCompressedObjectUrl();
           setCompressedVideoUrl(data.url);
           setCompressedFileName(data.filename);
           setCompressedFileSize(data.size || 0);
           setCompressedR2Key(data.r2_key || ""); // R2キーを保存
+          // 圧縮前サイズはサーバー（R2 の head_object）の値を正とする。
+          // 0 や未送信（旧バックエンド）のときは選択時に入れた file.size を保持する。
+          if (typeof data.original_size === "number" && data.original_size > 0) {
+            setOriginalFileSize(data.original_size);
+          }
           setProgress(100);
+          setStage({ name: "done", percent: 100, etaSec: null, queuePosition: null });
           setIsUploading(false);
           setErrorMessage("");
         } else if (data.type === "progress") {
+          // phase 未指定は旧バックエンド互換として encoding とみなす
+          const phase = data.phase || "encoding";
           setProgress(data.value);
+          setStage({
+            name: phase,
+            percent: typeof data.value === "number" ? data.value : 0,
+            etaSec: typeof data.etaSec === "number" ? data.etaSec : null,
+            queuePosition: typeof data.queuePosition === "number" ? data.queuePosition : null,
+          });
         } else if (data.type === "warning") {
-          setErrorMessage(`⚠️ ${data.detail}`);
+          setErrorMessage(data.detail);
         } else if (data.type === "error") {
           setErrorMessage(data.detail || "サーバーで圧縮エラーが発生しました。");
+          setStage((s) => ({ ...s, name: "error" }));
           setIsUploading(false);
         }
       } catch (err) {
@@ -92,14 +225,33 @@ export default function useVideoProcessing({ token, handleLogout, userInfo }) {
     };
 
     ws.current.onclose = (event) => {
+      // ジョブ実行中に切れたら、無反応にせず「切断」として見せる。
+      // clientId はマウント中不変なので、再接続すればサーバー側の clients[client_id] が
+      // 張り直され、以降の進捗は届く。取りこぼした分は percent が絶対値なので自己修復する。
+      setStage((s) => (SERVER_STAGES.includes(s.name) ? { ...s, name: "disconnected" } : s));
     };
 
     return () => {
       if (ws.current) {
+        ws.current.onclose = null; // アンマウント時の close を「切断」と誤表示しない
         ws.current.close();
       }
     };
   }, [clientId, token]);
+
+  // 無通信ウォッチドッグ。
+  // サーバー由来の段階にいる間、60秒メッセージが無ければ無応答として表示する。
+  // エンコード中の percent 更新間隔は最長でも「総エンコード時間/100」
+  // （30分エンコードで約18秒）なので、この閾値で誤検知しない。
+  useEffect(() => {
+    if (!SERVER_STAGES.includes(stage.name)) return;
+    const timer = setInterval(() => {
+      if (lastServerMessageAt.current && Date.now() - lastServerMessageAt.current > 60000) {
+        setStage((s) => (SERVER_STAGES.includes(s.name) ? { ...s, name: "disconnected" } : s));
+      }
+    }, 5000);
+    return () => clearInterval(timer);
+  }, [stage.name]);
 
   const formatSize = (bytes) => {
     if (bytes === null || bytes === undefined) return '-';
@@ -111,6 +263,18 @@ export default function useVideoProcessing({ token, handleLogout, userInfo }) {
     } else {
       return `${(bytes / MB).toFixed(2)} MB`;
     }
+  };
+
+  /**
+   * 削減率を % で返す。正 = 削減、負 = 増加。
+   * 判定不能（未取得 / 0 / 非数）のときは null を返す。
+   * ここで null を返さないと NaN や Infinity が画面に出る。
+   */
+  const reductionRate = (before, after) => {
+    if (typeof before !== "number" || typeof after !== "number") return null;
+    if (!isFinite(before) || !isFinite(after)) return null;
+    if (before <= 0) return null;
+    return ((before - after) / before) * 100;
   };
 
   const estimateCompressedSize = (originalSize, crfValue) => {
@@ -134,13 +298,17 @@ export default function useVideoProcessing({ token, handleLogout, userInfo }) {
     return new Promise((resolve) => {
       const video = document.createElement('video');
       video.preload = 'metadata';
-      
+
+      // この URL は selectFile が管理する originalVideoUrl とは別に、
+      // メタデータ読み取り専用で使い捨て発行するものなので、
+      // 読み終えたら（成功・失敗いずれでも）ここで自分で revoke する。
+      // これを怠ると、動画を選択するたびに1本分の blob URL がリークし続ける。
       video.onloadedmetadata = () => {
         const width = video.videoWidth;
         const height = video.videoHeight;
         const duration = video.duration;
         const isDurationAvailable = !isNaN(duration) && duration > 0 && isFinite(duration);
-        
+
         // 解像度に応じたデフォルトビットレート設定
         let defaultBitrate;
         if (width >= 3840 || height >= 2160) {  // 4K
@@ -152,37 +320,46 @@ export default function useVideoProcessing({ token, handleLogout, userInfo }) {
         } else {  // 480p以下
           defaultBitrate = 1;
         }
-        
-        resolve({ 
-          width, 
-          height, 
-          duration: isDurationAvailable ? duration : 180, 
+
+        URL.revokeObjectURL(video.src);
+        resolve({
+          width,
+          height,
+          duration: isDurationAvailable ? duration : 180,
           defaultBitrate,
-          isDurationAvailable 
+          isDurationAvailable
         });
       };
-      
+
       video.onerror = () => {
         // エラーの場合はデフォルト値を返す
-        resolve({ 
-          width: 1920, 
-          height: 1080, 
-          duration: 180, 
+        URL.revokeObjectURL(video.src);
+        resolve({
+          width: 1920,
+          height: 1080,
+          duration: 180,
           defaultBitrate: 4,
-          isDurationAvailable: false 
+          isDurationAvailable: false
         });
       };
-      
+
       video.src = URL.createObjectURL(file);
     });
   };
 
+  // userInfo からアップロード容量を取り出す。
+  // upload_capacity_bytes は 0 も取り得る有効な値なので truthy 判定ではなく型で判定する
+  // （0 を「未取得」と誤判定しないため）。未取得のときのみ null を返す。
+  const getUserCapacity = (info) =>
+    info && typeof info.upload_capacity_bytes === "number" ? info.upload_capacity_bytes : null;
+
   const handleUpload = async () => {
     if (!file || isUploading) return;
 
-    // ユーザーのアップロード容量を取得 (userInfo が利用可能であることを想定)
-    // userInfo.upload_capacity_bytes が存在しない場合のデフォルト値を設定 (例: 100MB)
-    const userCapacity = userInfo && userInfo.upload_capacity_bytes ? userInfo.upload_capacity_bytes : 104857600;
+    // ユーザーのアップロード容量を取得 (userInfo が未取得の場合は null のまま扱う)
+    // 容量が未取得の状態で100MB等のデフォルト値にフォールバックすると、実際の上限が
+    // それより大きい場合に誤って容量超過エラーを出してしまうため、ここではフォールバックしない
+    let userCapacity = getUserCapacity(userInfo);
 
     if (isTokenExpired(token)) {
       alert("セッションが切れました。再ログインしてください。");
@@ -193,10 +370,27 @@ export default function useVideoProcessing({ token, handleLogout, userInfo }) {
     setIsUploading(true);
     setErrorMessage("");
     setProgress(0);
+    setStage({ name: "sending", percent: 0, etaSec: null, queuePosition: null });
 
     try {
       if (!file.type.startsWith("video/")) {
         setErrorMessage("動画ファイルのみアップロードできます（例: mp4）。サポートされている形式か確認してください。");
+        setIsUploading(false);
+        return;
+      }
+
+      // 容量が未取得の場合は /auth/me を取り直してから再評価する。
+      // AuthContext の fetchUserInfo は token 変更時に1回しか呼ばれないため、
+      // ここで再取得しないとユーザーが何度試しても状況が変わらず、
+      // 恒久的にアップロード不能になってしまう。
+      if (userCapacity === null && typeof refreshUserInfo === "function") {
+        const refreshedUserInfo = await refreshUserInfo();
+        userCapacity = getUserCapacity(refreshedUserInfo);
+      }
+
+      // 再取得にも失敗した場合のみ、上限判定ができないため処理を中断する
+      if (userCapacity === null) {
+        setErrorMessage("アップロード可能容量を取得できませんでした。通信状況を確認のうえ、ページを再読み込みするか再ログインしてください。");
         setIsUploading(false);
         return;
       }
@@ -243,7 +437,10 @@ export default function useVideoProcessing({ token, handleLogout, userInfo }) {
 
         // ローカルアップロードの場合は直接ダウンロードリンクを作成
         const blob = await uploadRes.blob();
+        // 前回の圧縮結果を先に解放してから発行する（元動画の selectFile と同じ手順）
+        releaseCompressedObjectUrl();
         const url = URL.createObjectURL(blob);
+        compressedObjectUrlRef.current = url;
         setCompressedVideoUrl(url);
         setCompressedFileName(file.name.replace(/\.[^/.]+$/, "") + "_compressed.mp4");
         setCompressedFileSize(blob.size);
@@ -271,13 +468,25 @@ export default function useVideoProcessing({ token, handleLogout, userInfo }) {
         return;
       }
 
-      const r2UploadRes = await fetch(upload_url, { method: "PUT", body: file });
-      if (!r2UploadRes.ok) {
-        setErrorMessage("R2へのファイルアップロードに失敗しました。");
+      // R2 への送信は fetch では進捗を取得できないため XHR を使う。
+      // 1.2GB の送信中ずっと 0% のままだったのがこれで解消する。
+      try {
+        await uploadToR2(upload_url, file, (percent, etaSec) => {
+          setProgress(percent);
+          setStage({ name: "sending", percent, etaSec, queuePosition: null });
+        });
+      } catch (uploadError) {
+        setErrorMessage(uploadError.message);
+        setStage((s) => ({ ...s, name: "error" }));
         setIsUploading(false);
         return;
       }
-      
+
+      // 送信完了からサーバー応答までの間も無反応にならないよう段階を進める
+      setStage({ name: "starting", percent: 0, etaSec: null, queuePosition: null });
+      lastServerMessageAt.current = Date.now();
+
+
       const compressFormData = new FormData();
       compressFormData.append("filename", file.name);
       compressFormData.append("crf", crf);
@@ -469,6 +678,9 @@ export default function useVideoProcessing({ token, handleLogout, userInfo }) {
 
   // 状態をリセット（新しいアップロード時）
   const resetStates = () => {
+    // state から参照を外す前に revoke する。ここで解放しないと、
+    // ファイルを選び直すたびに前回の圧縮結果がタブ内に残り続ける。
+    releaseCompressedObjectUrl();
     setCompressedVideoUrl("");
     setCompressedFileName("");
     setCompressedFileSize(0);
@@ -476,11 +688,14 @@ export default function useVideoProcessing({ token, handleLogout, userInfo }) {
     setShareUrl("");
     setShareMessage("");
     setProgress(0);
+    setStage({ name: "idle", percent: 0, etaSec: null, queuePosition: null });
     setErrorMessage("");
   };
 
   return {
+    stage,
     file, setFile,
+    selectFile,
     originalVideoUrl, setOriginalVideoUrl,
     originalFileSize, setOriginalFileSize,
     compressedVideoUrl, setCompressedVideoUrl,
@@ -503,6 +718,7 @@ export default function useVideoProcessing({ token, handleLogout, userInfo }) {
     handleUpload,
     downloadCompressedVideo,
     formatSize,
+    reductionRate,
     estimateCompressedSize,
     estimateCompressedSizeGPU,
     getVideoDimensions,

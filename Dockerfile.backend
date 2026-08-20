@@ -44,4 +44,26 @@ RUN mkdir -p /app/logs && chmod 755 /app/logs
 RUN echo '#!/bin/bash\necho "NVIDIA GPU Information:"\nnvidia-smi 2>/dev/null || echo "nvidia-smi not available"\necho "FFmpeg encoders:"\nffmpeg -hide_banner -encoders | grep -i nvenc || echo "NVENC encoders not found"\necho "FFmpeg version:"\nffmpeg -version' > /usr/local/bin/check-gpu && \
     chmod +x /usr/local/bin/check-gpu
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8001", "--proxy-headers", "--log-level", "info"]
+# 非 root で実行する。任意コード実行の脆弱性を踏んだ場合の被害を抑えるため
+# （動画アップロードを受け付けるので特に重要）。
+# UID/GID を固定するのは、bind mount 先（backend/db_data・backend/logs）の
+# 所有者を予測可能にするため。
+# db_data と logs は名前付きボリュームでマウントする。イメージ側に app 所有の空ディレクトリを
+# 用意しておくと、初回マウント時に Docker がその所有者ごとボリュームへ複製するため、
+# 非 root でも書き込める。
+# （bind mount では不可能: Docker Desktop for Windows はディレクトリを 777、
+#   ファイルを root 所有の 644 で見せるため、既存ファイルへの追記が Permission denied になる）
+RUN mkdir -p /app/db_data /app/logs \
+    && groupadd --gid 10001 app \
+    && useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin app \
+    && chown -R app:app /app
+USER app
+
+EXPOSE 8001
+
+# --timeout-graceful-shutdown 5: uvicornの既定は無期限待ちのため、SIGTERM後に
+# 進行中リクエストタスクが残っているといつまでも終了しない。圧縮ジョブは
+# BackgroundTasksで起動されuvicornの「進行中リクエストタスク」に数えられるため、
+# 既定のままだと転送中のSIGTERMでlifespanのshutdown（core/r2_transfer.py参照）に
+# 到達しない。5秒はdockerの既定猶予10秒から逆算した値（5 + shutdown処理の余裕3 = 8 < 10）。
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8001", "--proxy-headers", "--log-level", "info", "--timeout-graceful-shutdown", "5"]

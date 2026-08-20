@@ -53,8 +53,8 @@ export default function Register() {
         }
         button {
           padding: 0.5rem 1rem;
-          background: #0070f3;
-          color: white;
+          background: var(--accent);
+          color: var(--accent-contrast);
           border: none;
           border-radius: 6px;
           cursor: pointer;

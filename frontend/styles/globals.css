@@ -1,5 +1,117 @@
 /* Write your global styles here */
 
+/* ============================================================
+   テーマ（ライト既定 / ダーク切替）
+   docs\APP_STANDARD.md §9 を参照。色は必ず変数経由にし、直値を書かない。
+   既定はライト。[data-theme="dark"] でダークへ上書きする。
+   ============================================================ */
+:root {
+  color-scheme: light;
+
+  /* --- §9-5 必須セット（ライト既定。既存の見た目をそのまま採用） --- */
+  --bg: #ffffff;
+  --panel: #ffffff;
+  --panel-border: #dddddd;
+  --overlay: rgba(0, 0, 0, 0.5);
+  --text: #333333;
+  --muted: #666666;
+  --ok: #28a745;
+  --ng: #dc3545;
+  --warn: #ffc107;
+  /* --warn はライト/ダークとも明るい琥珀色のため、その上に載せる文字は
+     【常に暗い色】でなければ読めない。--accent-contrast や --text-strong を
+     使うとダークテーマでコントラスト比 1.4 程度になり判読不能になる。 */
+  --warn-contrast: #1b1f24;
+  --inconclusive: #6c757d;
+  --accent: #0070f3;
+  --accent-hover: #0056b3;
+  --accent-contrast: #ffffff;
+  --input-bg: #ffffff;
+  --input-border: #cccccc;
+  --shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+
+  /* --- CompShare 固有（§9-5 の必須セットで表現できない値のみ） --- */
+
+  /* 第2の面。ライトでは --bg / --panel / --input-bg がいずれも #ffffff のため、
+     カードやコンテナを地から浮かせるにはもう1段の面が要る */
+  --panel-alt: #f8f9fa;
+  /* 強調本文。--text(#333333) より濃く、両テーマとも必須セットと不一致 */
+  --text-strong: #212529;
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  /* --- §9-5 必須セット（ダーク上書き。暗い背景で沈まないよう別値にする） --- */
+  --bg: #14161a;
+  --panel: #1e2126;
+  --panel-border: #3a3f47;
+  --overlay: rgba(0, 0, 0, 0.65);
+  --text: #e6e9ef;
+  --muted: #9aa4b2;
+  --ok: #3ecf8e;
+  --ng: #f0605a;
+  --warn: #f5c451;
+  /* ダークでも背景は明るい琥珀色のまま。文字色はライトと同じ暗色を使う */
+  --warn-contrast: #1b1f24;
+  --inconclusive: #9aa4b2;
+  --accent: #4c8dff;
+  --accent-hover: #6ba2ff;
+  --accent-contrast: #0b0e13;
+  --input-bg: #1a1d22;
+  --input-border: #3a3f47;
+  --shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+
+  /* --- CompShare 固有（ダーク上書き。理由は :root 側のコメント参照） --- */
+  --panel-alt: #1a1d22;
+  --text-strong: #f2f4f7;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body { transition: none; }
+}
+
+/* ============================================================
+   テーマ切替ボタン（docs\APP_STANDARD.md §9-2）
+   絵文字・表示テキストは使わず、線画 SVG のみ。
+   ============================================================ */
+.theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--muted);
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.theme-toggle:hover {
+  color: var(--text);
+  border-color: var(--muted);
+}
+
+.theme-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.theme-toggle svg {
+  width: 18px;
+  height: 18px;
+  display: block;
+}
+
 /* エラーページ用スタイル */
 .error-container {
     display: flex;
@@ -9,38 +121,39 @@
     min-height: 60vh;
     text-align: center;
     padding: 2rem;
-    background-color: #f8f9fa;
+    background-color: var(--panel-alt);
     border-radius: 12px;
-    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    box-shadow: var(--shadow);
     margin: 2rem auto;
     max-width: 600px;
 }
 
-.error-icon {
-    font-size: 4rem;
-    margin-bottom: 1rem;
-    opacity: 0.7;
-}
-
 .error-container h1 {
-    color: #dc3545;
+    color: var(--ng);
     margin-bottom: 1rem;
     font-size: 2rem;
     font-weight: 600;
 }
 
+/* 共有ページの notfound / expired / error の3状態がこのクラスを使う。
+   色に --inconclusive を使わないこと: ライトテーマの #6c757d は
+   .error-container の背景 --panel-alt(#f8f9fa) に対して実測 4.45:1 で、
+   WCAG AA の 4.5:1 にわずかに届かない。1.2rem / weight 500 は
+   large text（18.66px 以上かつ bold、または 24px 以上）の閾値に達しないため
+   4.5:1 が必要。--muted なら ライト 5.44:1 / ダーク（#9aa4b2 on #1a1d22）6.63:1 で
+   両テーマとも AA を満たす。 */
 .error-message {
     font-size: 1.2rem;
-    color: #6c757d;
+    color: var(--muted);
     margin-bottom: 2rem;
     font-weight: 500;
 }
 
 .error-details {
-    background-color: #fff;
+    background-color: var(--panel);
     padding: 1.5rem;
     border-radius: 8px;
-    border-left: 4px solid #dc3545;
+    border-left: 4px solid var(--ng);
     margin-bottom: 2rem;
     text-align: left;
     width: 100%;
@@ -49,7 +162,7 @@
 
 .error-details p {
     margin-bottom: 1rem;
-    color: #495057;
+    color: var(--text-strong);
     font-weight: 500;
 }
 
@@ -60,14 +173,14 @@
 
 .error-details li {
     padding: 0.5rem 0;
-    color: #6c757d;
+    color: var(--inconclusive);
     position: relative;
     padding-left: 1.5rem;
 }
 
 .error-details li:before {
     content: "•";
-    color: #dc3545;
+    color: var(--ng);
     font-weight: bold;
     position: absolute;
     left: 0;
@@ -78,8 +191,8 @@
 }
 
 .home-button {
-    background-color: #0070f3;
-    color: white;
+    background-color: var(--accent);
+    color: var(--accent-contrast);
     border: none;
     padding: 12px 24px;
     border-radius: 6px;
@@ -91,13 +204,13 @@
 }
 
 .home-button:hover {
-    background-color: #0056b3;
+    background-color: var(--accent-hover);
 }
 
 /* ローディングスピナー */
 .loading-spinner {
-    border: 4px solid #f3f3f3;
-    border-top: 4px solid #0070f3;
+    border: 4px solid var(--panel-border);
+    border-top: 4px solid var(--accent);
     border-radius: 50%;
     width: 40px;
     height: 40px;
@@ -119,52 +232,58 @@
     min-height: 60vh;
     text-align: center;
     padding: 2rem;
-    background-color: #f8f9fa;
+    background-color: var(--panel-alt);
     border-radius: 12px;
-    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    box-shadow: var(--shadow);
     margin: 2rem auto;
     max-width: 600px;
 }
 
 .file-info {
     width: 100%;
-    max-width: 500px;
+    /* <video> を含めるため、テキストのみを想定した500pxの上限は撤廃する */
+    max-width: 100%;
 }
 
-.file-icon {
-    font-size: 4rem;
-    margin-bottom: 1rem;
-    opacity: 0.8;
-}
-
+/* 見出しの色を --ok から --text に変更する。
+   理由: ライトテーマで白系背景に載せた --ok(#28a745) は 3.13:1 で
+   WCAG AA(4.5:1) を満たさない（実測）。状態色は文字色に使わない方針とし、
+   見出しは通常の本文色で表現する。 */
 .file-info h1 {
-    color: #28a745;
+    color: var(--text);
     margin-bottom: 2rem;
     font-size: 2rem;
     font-weight: 600;
 }
 
 .file-details {
-    background-color: #fff;
+    background-color: var(--panel);
     padding: 1.5rem;
     border-radius: 8px;
-    border-left: 4px solid #28a745;
+    border-left: 4px solid var(--ok);
     margin-bottom: 2rem;
     text-align: left;
 }
 
 .file-details p {
     margin-bottom: 0.8rem;
-    color: #495057;
+    color: var(--text-strong);
+    overflow-wrap: anywhere;   /* 日本語長ファイル名でも枠を割らない */
 }
 
 .file-details p:last-child {
     margin-bottom: 0;
 }
 
+/* <button> から <a> になったため display と text-decoration を追加する。
+   併せて背景色を --ok から --accent に変更する。
+   理由: ライトテーマで白文字 on --ok(#28a745) は 3.13:1 で WCAG AA 不合格。
+   --accent(#0070f3) + --accent-contrast は ライト 4.55:1 / ダーク 6.05:1 で合格する（実測）。 */
 .download-button {
-    background-color: #28a745;
-    color: white;
+    display: inline-block;
+    text-decoration: none;
+    background-color: var(--accent);
+    color: var(--accent-contrast);
     border: none;
     padding: 15px 30px;
     border-radius: 6px;
@@ -175,7 +294,21 @@
 }
 
 .download-button:hover {
-    background-color: #218838;
+    background-color: var(--accent-hover);
+}
+
+.share-video {
+    width: 100%;
+    max-width: 100%;
+    border-radius: 8px;
+    margin-bottom: 1.5rem;
+    background: var(--panel-alt);   /* メタデータ読み込み前の黒枠を面色に揃える */
+}
+
+.share-notice {                     /* 有効期限の注意書き */
+    color: var(--muted);
+    font-size: 0.9rem;
+    margin-top: 1rem;
 }
 
 /* レスポンシブデザイン */

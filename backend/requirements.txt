@@ -7,9 +7,16 @@ aiofiles
 python-dotenv
 python-magic
 boto3
+# boto3の依存として自動で入るが、core/r2_transfer.pyがs3transfer.manager.TransferManagerを
+# 直接importするため明示宣言する。
+s3transfer
 botocore
 aiosqlite
 passlib[bcrypt]
 bcrypt==4.0.1
 pydantic-settings
 apscheduler
+# apscheduler の CronTrigger(timezone="Asia/Tokyo") が zoneinfo を引くために必須。
+# slim 系イメージには OS の tzdata が無く、これが無いと
+# ZoneInfoNotFoundError で起動に失敗する。
+tzdata

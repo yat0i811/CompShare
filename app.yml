@@ -1,0 +1,38 @@
+schemaVersion: 1
+name: compshare
+displayName: CompShare
+description: 動画圧縮・共有サービス（GPU NVENC + Cloudflare R2）
+enabled: true
+startupOrder: 30
+compose:
+  file: docker-compose.yml
+  debugFile: docker-compose.debug.yml
+gpu: true
+routes:
+  # compshareapi.yat0i.com は廃止し、compshare-frontend(nginx) の /be 配下に統合した
+  # （バックエンドは edge に参加せず internal 専用になった）。
+  - hostname: compshare.yat0i.com
+    service: compshare-frontend
+    port: 3001
+    # 公開ヘルスパスはプラットフォーム標準の /healthz に統一（APP_STANDARD.md 参照）。
+    # nginx が /api/healthz へ書き換えて Next.js まで通すため、nginx 単体では完結しない
+    # ＝ Next.js が落ちればここで検知できる。
+    health: { path: /healthz, expectStatus: 200, timeoutSec: 15 }
+dependencies:
+  apps: []
+  hostServices: []
+  external: [Cloudflare R2]
+health:
+  startupGraceSec: 120
+  maxRestartAttempts: 3
+debugPorts:
+  - { service: compshare-frontend, host: 19011, container: 3001, bind: 127.0.0.1, reason: nginx 直接確認 }
+  - { service: compshare-backend,  host: 19012, container: 8001, bind: 127.0.0.1, reason: FastAPI /docs }
+  - { service: compshare-web,      host: 19013, container: 3004, bind: 127.0.0.1, reason: Next.js 単体確認 }
+secrets:
+  envFile: backend/.env
+  requiredKeys: [SECRET_KEY, CORRECT_PASSWORD, ADMIN_USERNAME,
+                 R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME, R2_ENDPOINT_URL]
+volumes:
+  - { path: ./backend/db_data, type: bind, purpose: "SQLite ユーザーDB" }
+  - { path: ./backend/logs,    type: bind, purpose: アプリログ }

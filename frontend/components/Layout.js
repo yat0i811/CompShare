@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/router';
 import useAuth from '../hooks/useAuth';
+import ThemeToggle from './ThemeToggle';
 
 const Layout = ({ children }) => {
     const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -26,6 +27,9 @@ const Layout = ({ children }) => {
                 <Link href="/">
                     <button className="logo-button">CompShare</button>
                 </Link>
+                <div className="header-actions">
+                    <ThemeToggle />
+                </div>
             </header>
 
             <div className={`sidebar ${sidebarOpen ? 'open' : ''}`}>
@@ -70,7 +74,7 @@ const Layout = ({ children }) => {
                 }
                 .header {
                     width: 100%;
-                    background-color: #f0f0f0;
+                    background-color: var(--panel-alt);
                     padding: 10px;
                     display: flex;
                     align-items: center;
@@ -81,11 +85,12 @@ const Layout = ({ children }) => {
                     background: none;
                     border: none;
                     cursor: pointer;
+                    color: var(--text);
                 }
                 .logo-button {
                     cursor: pointer;
                     font-weight: bold;
-                    color: #333;
+                    color: var(--text);
                     background: none;
                     border: none;
                     font-size: 1.2em;
@@ -93,7 +98,12 @@ const Layout = ({ children }) => {
                     margin: 0;
                 }
                 .logo-button:hover {
-                    color: #999;
+                    color: var(--muted);
+                }
+                .header-actions {
+                    display: flex;
+                    align-items: center;
+                    margin-left: auto;
                 }
                 .sidebar {
                     position: fixed;
@@ -101,8 +111,8 @@ const Layout = ({ children }) => {
                     left: -250px;
                     width: 250px;
                     height: 100%;
-                    background-color: #fff;
-                    box-shadow: 2px 0 5px rgba(0,0,0,0.5);
+                    background-color: var(--panel);
+                    box-shadow: var(--shadow);
                     transition: left 0.3s ease;
                     z-index: 1000;
                     padding-top: 50px;
@@ -118,6 +128,7 @@ const Layout = ({ children }) => {
                     background: none;
                     border: none;
                     cursor: pointer;
+                    color: var(--text);
                 }
                 .sidebar nav ul {
                     list-style: none;
@@ -126,7 +137,7 @@ const Layout = ({ children }) => {
                 }
                 .sidebar nav li {
                     padding: 10px;
-                    border-bottom: 1px solid #eee;
+                    border-bottom: 1px solid var(--panel-border);
                 }
                 .sidebar nav li button {
                     width: 100%;
@@ -135,17 +146,17 @@ const Layout = ({ children }) => {
                     border: none;
                     cursor: pointer;
                     font-size: 1em;
-                    color: #333;
+                    color: var(--text);
                     padding: 8px 12px;
                     border-radius: 4px;
                     transition: background-color 0.2s ease;
                 }
                 .sidebar nav li button:hover {
-                    background-color: #f5f5f5;
+                    background-color: var(--panel-alt);
                 }
                 .sidebar nav li.logout-button-container {
                     margin-top: auto;
-                    border-top: 1px solid #eee;
+                    border-top: 1px solid var(--panel-border);
                     border-bottom: none;
                     padding: 15px 10px;
                 }
@@ -156,17 +167,17 @@ const Layout = ({ children }) => {
                     border: none;
                     cursor: pointer;
                     font-size: 1em;
-                    color: #333;
+                    color: var(--text);
                     padding: 8px 12px;
                     border-radius: 4px;
                     transition: background-color 0.2s ease;
                 }
                 .sidebar nav li.logout-button-container button:hover {
-                    background-color: #f5f5f5;
+                    background-color: var(--panel-alt);
                 }
                 .sidebar nav a {
                     text-decoration: none;
-                    color: #333;
+                    color: var(--text);
                     display: block;
                 }
                 .main-content {
@@ -184,7 +195,7 @@ const Layout = ({ children }) => {
                     left: 0;
                     width: 100%;
                     height: 100%;
-                    background-color: rgba(0,0,0,0.5);
+                    background-color: var(--overlay);
                     z-index: 999;
                 }
             `}</style>

@@ -1,0 +1,29 @@
+# CompShare backend 専用の開発ツール設定(ruff / pytest)。
+# 本番イメージには入れない(.dockerignore で除外)。
+# 【重要】同じディレクトリに pytest.ini を作らないこと。pytest.ini があると
+# こちらの [tool.pytest.ini_options] が丸ごと無視される。
+
+[tool.ruff]
+target-version = "py310"          # 本番は ubuntu:22.04 + python3.10
+line-length = 120
+exclude = ["db_data", "logs", "uploads"]
+
+[tool.ruff.lint]
+# ruff 0.16 で既定有効ルールが 59→413 に増えたため、既定に依存せず明示列挙する。
+# 目的は「async def 内の"組み込み"同期 I/O」(open / os.* / time.sleep / subprocess /
+# requests / httpx / urllib)の自動検知に絞る。
+# 【重要】ASYNC ルールの検知対象はこの組み込み固定リストだけで、boto3/botocore は含まれない。
+# async def 内に r2_client.head_object(...) と直書きしても ruff は素通りする(実測で確認)。
+# つまり CLOSE_ISSUES §4-1(同期 R2 呼び出しでループが約 74 秒停止)そのものは ruff では
+# 守れない。そちらは test_async_hygiene.py の AST テストが守っている。
+select = ["ASYNC"]
+
+# ASYNC240(async 関数内の os.path.* / pathlib.Path メソッド)は無効化する。
+# 本アプリでの該当箇所はすべて、このプロセスが直前に作成したローカル一時ファイルへの
+# stat()(数十 μs)であり、ループ停止の原因にならない。to_thread へ逃がすスレッド切替の
+# 方が高くつく。ネットワーク越しのファイルシステムを扱うようになったら見直すこと。
+ignore = ["ASYNC240"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"             # pytest-asyncio。async def のテストに毎回マーカーを付けない
+norecursedirs = ["db_data", "logs", "uploads", ".git"]

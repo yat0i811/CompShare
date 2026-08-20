@@ -8,6 +8,13 @@ RUN npm ci
 COPY frontend/ ./
 RUN npm run build
 
-EXPOSE 3001
-ENV PORT=3001
+# 非 root で実行する。node イメージには uid 1000 の node ユーザーが同梱されている。
+# .next のビルド成果物とキャッシュに書き込むため、/app の所有者を移す。
+RUN chown -R node:node /app
+USER node
+
+# compshare-web（旧 compshare-frontend）は internal 専用。公開は compshare-frontend（nginx）が担う。
+# ポート規則: フロントは 300x（docs\APP_STANDARD.md 参照。3001/3002/3003 使用済みのため 3004）
+EXPOSE 3004
+ENV PORT=3004
 CMD ["npm", "start"]

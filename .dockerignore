@@ -1,4 +1,39 @@
+# 注意: .dockerignore は【行頭 # のみ】をコメントとして扱う。
+# 行末コメントはパターン文字列の一部と見なされ、その行の除外が丸ごと無効になる。
+# 実際に "backend/.env  # 説明" と書いた結果、秘密がイメージに焼き込まれていた。
+# このファイルにインラインコメントを書かないこと。
+
+# --- 秘密（実行時は env_file で供給する。イメージに焼き込まない） ---
+# ワイルドカードでバックアップ（.env.bak-*）等の派生ファイルも除外する。
+# 過去に backend/.env.bak-20260815 が完全一致パターンの網から漏れ、
+# 稼働中イメージに秘密が焼き込まれていた事故があったため。
 .env
+backend/.env*
+
+# --- 永続データ・ログ ---
+backend/db_data
+backend/logs
+
+# --- テスト・開発用 ---
+# 個別列挙はファイル追加のたびに漏れる(.env の事故と同じ構図)ため、
+# テストファイルはワイルドカードで除外する。
+backend/test_*.py
+backend/conftest.py
+backend/pyproject.toml
+backend/requirements-dev.txt
+
+# --- 依存・ビルド成果物 ---
+# pytest/ruff の導入で backend/ 配下にキャッシュが生成されるようになった。
+# COPY backend/ は上のテスト除外パターン(backend/test_*.py)の対象外である .pyc
+# (コンパイル済みテストを含む)を拾ってしまうため、必ず除外する。
 **/node_modules
 **/.next
 **/*.log
+**/__pycache__
+**/.pytest_cache
+**/.ruff_cache
+.git
+
+# frontend/.env は【除外しない】。
+# Next.js は NEXT_PUBLIC_* をビルド時にクライアント JS へ埋め込むため、
+# ビルドコンテキストに存在しないと NEXT_PUBLIC_BACKEND_URL が空になる。

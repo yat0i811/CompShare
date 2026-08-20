@@ -14,6 +14,7 @@
 * [設定](#設定)
 * [使い方](#使い方)
 * [停止方法](#停止方法)
+* [テスト](#テスト)
 * [ライセンス](#ライセンス)
 
 ---
@@ -113,10 +114,10 @@
     UPLOAD_DIR=/app/uploads
     ```
 
-4.  Docker イメージをビルドします。
+4.  Docker イメージをビルドします（基盤リポジトリのルート `R:\WebAppServer` で実行）。
 
-    ```bash
-    .\update_all.bat
+    ```powershell
+    .\scripts\was.ps1 build compshare
     ```
 
 ---
@@ -140,25 +141,80 @@
 
 ## 使い方
 
-アプリケーションを起動するには、プロジェクトのルートディレクトリで以下のスクリプトを実行
+起動・停止は WebAppServer 基盤の運用 CLI（`R:\WebAppServer\scripts\was.ps1`）から行います。基盤リポジトリのルートで実行してください。
 
-```bash
-.\start.bat
+```powershell
+.\scripts\was.ps1 up compshare       # 起動（platform の cloudflared も一緒に立ち上がる）
+.\scripts\was.ps1 status             # コンテナ / health の確認
+.\scripts\was.ps1 logs compshare compshare-backend -Follow
 ```
 
-これにより、Docker Compose によってバックエンドとフロントエンドのコンテナが起動し、設定済みの Cloudflare Tunnel が開始されます。アプリケーションには、設定した Cloudflare Tunnel のURL経由でアクセスできます。
+これにより Docker Compose でバックエンド・フロントエンドのコンテナが起動し、`platform\` 側の Cloudflare Tunnel 経由で `compshare.yat0i.com` から到達できるようになります（ルーティングは `app.yml` から生成されます）。
+
+イメージを作り直す場合は `.\scripts\was.ps1 build compshare`（`--no-cache` 可）を使います。
 
 ---
 
 ## 停止方法
 
-アプリケーションを停止するには、プロジェクトのルートディレクトリで以下のスクリプトを実行します。
-
-```bash
-.\stop.bat
+```powershell
+.\scripts\was.ps1 down compshare     # このアプリだけ停止（-KeepPlatform でトンネルは残す）
 ```
 
-これにより、起動しているDockerコンテナとCloudflare Tunnelプロセスが停止します。
+このアプリのコンテナだけを直接操作したい場合は、`apps\CompShare` ディレクトリで `docker compose` をそのまま使うこともできます（`edge` ネットワークと cloudflared は基盤側が用意している前提）。
+
+```powershell
+docker compose stop compshare-backend
+docker compose down
+```
+
+---
+
+## テスト
+
+テスト用の依存は `backend/requirements-dev.txt` にまとめてあります。本番イメージを太らせないため `backend/requirements.txt` には含めておらず、`.dockerignore` でイメージからも除外しています（テストコード `backend/test_*.py` ・ `backend/conftest.py` ・ `backend/pyproject.toml` も同様）。したがってテストは**コンテナの外**、または隔離したディレクトリで実行します。
+
+1.  テスト用依存のインストール（`backend` ディレクトリで実行、**この順序で**）
+
+    ```bash
+    cd backend
+    pip install -r requirements.txt      # テスト対象が import するアプリ本体の依存
+    pip install -r requirements-dev.txt  # pytest / pytest-asyncio / ruff
+    ```
+
+    Windows開発機では `requirements.txt` を先に入れる必要があります。`requirements-dev.txt` が追加する `python-magic-bin`（libmagicのDLLを同梱するWindows専用パッケージ）は `requirements.txt` の `python-magic` と同じ `magic` パッケージを提供する別配布物のため、後から入れたほうが優先されます。逆順だと `python-magic` が `is_safe_video` などの実行時に libmagic の DLL を見つけられずエラーになります（本番の `ubuntu:22.04` イメージでは `apt-get install libmagic1` で解決しており影響ありません）。
+
+2.  テストの実行（`backend` ディレクトリで実行）
+
+    ```bash
+    python -m pytest -v
+    ```
+
+    `.env` は不要です。`backend/conftest.py` が収集の最初にダミーの環境変数（`SECRET_KEY` / `R2_ACCESS_KEY_ID` / `R2_ENDPOINT_URL=https://r2.invalid` など）を注入するため、`core/config.py` の `settings = Settings()` 評価に必要な必須項目が揃います。実際の `backend/.env` が存在していても、`conftest.py` が設定する `os.environ` の値で上書きされるため実際の R2 には接続しません。
+
+    個別のテストファイルだけを実行する例:
+
+    ```bash
+    python -m pytest test_range.py -v        # 共有動画プレビューのRangeヘッダ解析(純関数)
+    python -m pytest test_security.py -v     # ファイル名サニタイズ・検証、IPアドレス判定
+    python -m pytest test_r2_transfer.py -v  # R2専用エグゼキュータの分離・ループ応答性・停止処理
+    python -m pytest test_lifespan.py -v     # アプリ停止時にR2転送が正しく停止すること
+    python -m pytest test_async_hygiene.py -v # async def 内に同期のR2呼び出しが無いこと(AST解析)
+    ```
+
+    全体でおよそ5秒程度で完了します（R2やDBへの実アクセスを行わないため）。
+
+3.  静的解析（ruff）
+
+    ```bash
+    ruff check .
+    ```
+
+    `pyproject.toml` の `[tool.ruff.lint]` で `ASYNC` ルール群のみを有効にしています。`async def` 関数内で**組み込みの同期I/O**（`open()` / `os.*` / `time.sleep` / `subprocess` / `requests` / `httpx` / `urllib`）を行っている箇所を検知するためのものです。`ASYNC240`（`async def` 内の `os.path.*`）だけは無効化しています。該当箇所がすべてローカル一時ファイルへの `stat()`（数十μs）で、スレッドへ逃がすコストの方が高いためです（理由は `pyproject.toml` のコメントと `docs/CLOSE_ISSUES.md` §5-5 を参照）。
+
+    **注意: ruff の `ASYNC` ルールは boto3/botocore を知りません。** 検知対象は上記の組み込み固定リストだけなので、`async def` の中に `r2_client.head_object(...)` と直書きしても ruff は素通りします。R2転送処理が丸ごとイベントループを止めていた事故（`docs/CLOSE_ISSUES.md` §4-1）そのものの再発は、ruff ではなく `test_async_hygiene.py`（`main.py` と `routers/*.py` を AST 解析し、`async def` 内の直接 `r2_client` 呼び出しを検出するテスト）が守っています。
+
+    新しい設計の背景（専用エグゼキュータ・停止シーケンス・`--timeout-graceful-shutdown`）とデプロイ前の手動確認項目は `docs/CLOSE_ISSUES.md` §5 にまとめてあります。
 
 ---
 

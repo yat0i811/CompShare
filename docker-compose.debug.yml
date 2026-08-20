@@ -1,0 +1,4 @@
+services:
+  compshare-frontend: { ports: ["127.0.0.1:19011:3001"] }
+  compshare-backend:  { ports: ["127.0.0.1:19012:8001"] }
+  compshare-web:      { ports: ["127.0.0.1:19013:3004"] }

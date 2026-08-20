@@ -87,6 +87,10 @@ def validate_filename(filename: str) -> bool:
         r'^\.',   # 隠しファイル
         r'^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$',  # Windows予約名
         r'[\\/:*?"<>|]',  # 危険な文字
+        # 制御文字。CR/LF を含むファイル名は Content-Disposition ヘッダに載せると
+        # レスポンス分割の materials になる。現状は h11 がヘッダ値を検証して弾くが、
+        # httptools を導入すると検証が緩むため、入口で落としておく。
+        r'[\x00-\x1f\x7f]',
     ]
     
     for pattern in dangerous_patterns:

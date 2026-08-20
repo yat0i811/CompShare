@@ -1,38 +1,109 @@
+name: compshare
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-labels: &labels
+  com.yat0i.managed: "true"
+  com.yat0i.app: "compshare"
+
 services:
-  backend:
+  compshare-backend:
     build:
       context: .
       dockerfile: Dockerfile.backend
-    volumes:
-      - ./backend/db_data:/app/db_data
-      - ./backend/logs:/app/logs
-    ports:
-      - "8001:8001"
-    networks:
-      - app-network
+    container_name: compshare-backend
+    restart: unless-stopped
+    gpus: all                       # runtime: nvidia + deploy.resources の二重指定を廃止
     env_file:
-      - ./backend/.env
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
-    runtime: nvidia
+      # format: raw は必須。既定では compose が env_file の値も変数展開するため、
+      # SECRET_KEY に含まれる "$bgs" が未定義変数と解釈されて空文字に置換され、
+      # コンテナには 66 文字ではなく 62 文字の壊れた鍵が渡っていた（実測で確認）。
+      # raw にすると値をそのまま渡す。$ を含む秘密を安全に扱うため変更しないこと。
+      - path: ./backend/.env
+        format: raw
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
-      - NVIDIA_DRIVER_CAPABILITIES=compute,utility,video
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility,video   # NVENC に必要
+    volumes:
+      # bind mount ではなく名前付きボリュームを使うこと。
+      # Docker Desktop for Windows の bind mount はファイルを root 所有の 644 で見せるため、
+      # 非 root 実行のコンテナが既存ファイルに追記できない（users.db / security.log が該当）。
+      # ホストから中身を取り出す場合は docker cp を使う（README 参照）。
+      - db_data:/app/db_data
+      - logs:/app/logs
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:8001/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    # compshareapi.yat0i.com を廃止し compshare-frontend(nginx) の /be 配下に統合したため、
+    # edge には参加せず internal 専用にする（公開ホスト名を持たない）。
+    networks: [internal]
+    logging: *logging
+    labels:
+      <<: *labels
+      com.yat0i.role: "backend"
 
-  frontend:
+  # Next.js 本体。internal 専用（公開は compshare-frontend の nginx が担う）。
+  compshare-web:
     build:
       context: .
       dockerfile: Dockerfile.frontend
-    ports:
-      - "3001:3001"
-    networks:
-      - app-network
+    container_name: compshare-web
+    restart: unless-stopped
+    environment:
+      # サーバー側（pages/api/*）からバックエンドへ直接接続するための URL。
+      # NEXT_PUBLIC_ を付けないため、ビルド後のクライアントJSには漏れない。
+      - BACKEND_INTERNAL_URL=http://compshare-backend:8001
+    depends_on:
+      compshare-backend: { condition: service_started }
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-o", "/dev/null", "http://127.0.0.1:3004/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks: [internal]
+    logging: *logging
+    labels:
+      <<: *labels
+      com.yat0i.role: "frontend"
+
+  # edge 参加サービスのみグローバル一意名にする。SPA 配信はせず、compshare-web と
+  # compshare-backend への純粋なリバースプロキシとして動作する。
+  compshare-frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile.nginx
+    container_name: compshare-frontend
+    restart: unless-stopped
+    depends_on:
+      compshare-web:     { condition: service_started }   # nginx は resolver で遅延解決するため healthy 待ち不要
+      compshare-backend: { condition: service_started }
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3001/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    networks: [internal, edge]
+    logging: *logging
+    labels:
+      <<: *labels
+      com.yat0i.role: "frontend"
+      com.yat0i.hostname: "compshare.yat0i.com"
 
 networks:
-  app-network:
+  internal:
     driver: bridge
+  edge:
+    external: true
+
+volumes:
+  db_data:                # 実体名 compshare_db_data（SQLite ユーザーDB）
+  logs:                   # 実体名 compshare_logs（セキュリティ監査ログ）

@@ -1,0 +1,12 @@
+# compshare-frontend（edge 参加サービス）。
+# SPA を配信するのではなく、compshare-web（Next.js）と compshare-backend（FastAPI）への
+# 純粋なリバースプロキシとして動作するため、ビルドステージは不要（単一ステージ）。
+#
+# nginx-unprivileged は非 root（uid 101）で動く公式派生イメージ。
+# 素の nginx イメージは master プロセスが root で動くため、こちらを使う。
+# 非 root だと 1024 未満のポートを bind できないが、ポート規則で 3001 を使うので問題ない。
+FROM nginxinc/nginx-unprivileged:1.27-alpine
+COPY frontend/nginx.conf /etc/nginx/conf.d/default.conf
+
+# ポート規則: フロントは 300x（docs\APP_STANDARD.md 参照）
+EXPOSE 3001

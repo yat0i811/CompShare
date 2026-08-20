@@ -12,30 +12,31 @@ import styled from 'styled-components';
 const StyledAdminContainer = styled.div`
     padding: 20px;
     font-family: 'Arial', sans-serif;
-    background-color: #f4f7f6;
+    background-color: var(--panel-alt);
+    color: var(--text);
     min-height: 100vh;
 
     h1 {
-        color: #2c3e50;
-        border-bottom: 2px solid #bdc3c7;
+        color: var(--text);
+        border-bottom: 2px solid var(--panel-border);
         padding-bottom: 15px;
         margin-bottom: 30px;
         text-align: center;
     }
 
     h2 {
-        color: #34495e;
+        color: var(--text);
         margin-top: 25px;
         margin-bottom: 20px;
-        border-bottom: 1px solid #ecf0f1;
+        border-bottom: 1px solid var(--panel-border);
         padding-bottom: 8px;
     }
 `;
 
 const ErrorMessage = styled.p`
-    color: #e74c3c;
-    background-color: #fdeded;
-    border: 1px solid #e74c3c;
+    color: var(--ng);
+    background-color: color-mix(in srgb, var(--ng) 10%, var(--panel));
+    border: 1px solid var(--ng);
     padding: 10px;
     margin-bottom: 20px;
     border-radius: 5px;
@@ -43,10 +44,10 @@ const ErrorMessage = styled.p`
 
 const UserSection = styled.section`
     margin-bottom: 30px;
-    background-color: #fff;
+    background-color: var(--panel);
     padding: 20px;
     border-radius: 8px;
-    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.05);
+    box-shadow: var(--shadow);
 `;
 
 const UserGrid = styled.div`
@@ -56,11 +57,11 @@ const UserGrid = styled.div`
 `;
 
 const UserCard = styled.div`
-    border: 1px solid #ddd;
+    border: 1px solid var(--panel-border);
     border-radius: 8px;
     padding: 15px;
-    background-color: #fff;
-    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+    background-color: var(--panel);
+    box-shadow: var(--shadow);
     display: flex;
     flex-direction: column; /* 縦方向に要素を配置 */
     justify-content: space-between; /* 要素間にスペース */
@@ -82,13 +83,13 @@ const UserInfo = styled.div`
 
 // 承認状態のテキストスタイル
 const StatusText = styled.span`
-    color: ${props => props.isApproved ? '#28a745' : '#dc3545'}; /* 承認済み: 緑, 未承認: 赤 */
+    color: ${props => props.isApproved ? 'var(--ok)' : 'var(--ng)'}; /* 承認済み: 緑, 未承認: 赤 */
     font-weight: bold;
 `;
 
 // 権限のテキストスタイル
 const RoleText = styled.span`
-    color: ${props => props.isAdmin ? '#007bff' : '#6c757d'}; /* 管理者: 青, 一般: グレー */
+    color: ${props => props.isAdmin ? 'var(--accent)' : 'var(--inconclusive)'}; /* 管理者: 青, 一般: グレー */
     font-weight: bold;
 `;
 
@@ -106,29 +107,29 @@ const BaseButton = styled.button`
 `;
 
 const ApproveButton = styled(BaseButton)`
-    background-color: #2ecc71; /* 緑系 */
-    color: white;
+    background-color: var(--ok); /* 緑系 */
+    color: var(--accent-contrast);
 
     &:hover {
-        background-color: #27ae60;
+        filter: brightness(0.88);
     }
 `;
 
 const RejectButton = styled(BaseButton)`
-    background-color: #e74c3c; /* 赤系 */
-    color: white;
+    background-color: var(--ng); /* 赤系 */
+    color: var(--accent-contrast);
 
     &:hover {
-        background-color: #c0392b;
+        filter: brightness(0.88);
     }
 `;
 
 const RemoveButton = styled(BaseButton)`
-    background-color: #f39c12; /* オレンジ系 */
-    color: white;
+    background-color: var(--warn); /* オレンジ系 */
+    color: var(--warn-contrast);
 
      &:hover {
-        background-color: #e67e22;
+        filter: brightness(0.88);
     }
 `;
 
@@ -150,30 +151,87 @@ const CapacityControl = styled.div`
     select { // input から select に変更
         flex-grow: 1;
         padding: 8px; // 少しパディング調整
-        border: 1px solid #ccc;
+        border: 1px solid var(--input-border);
         border-radius: 4px;
+        background-color: var(--input-bg);
+        color: var(--text);
         // width: 80px; // width指定を削除し、flex-growで調整
     }
 
     button {
         padding: 5px 10px;
-        background-color: #3498db; /* 青系 */
-        color: white;
+        background-color: var(--accent); /* 青系 */
+        color: var(--accent-contrast);
         border: none;
         border-radius: 4px;
         cursor: pointer;
         font-size: 0.8em;
 
         &:hover {
-            background-color: #2980b9;
+            background-color: var(--accent-hover);
         }
 
         &:disabled {
-            background-color: #ccc;
+            background-color: var(--panel-border);
             cursor: not-allowed;
         }
     }
 `;
+
+// R2ストレージ使用量の判定バッジ。
+// 状態色を文字色に使うとライトテーマで AA を満たさない（--ok 3.13:1 / --warn 1.63:1、実測）。
+// 状態は「淡色背景 + 状態色のボーダー + --text の文字」で表す。
+// この配色は上部の .share-message.success/.error と同じ color-mix パターン。
+// styled-components v6 では素の props をDOM要素に転送しようとして警告が出るため、
+// カスタム props はトランジェント props（$color）にする。
+const StatusBadge = styled.span`
+    display: inline-block;
+    padding: 4px 12px;
+    border-radius: 12px;
+    font-weight: bold;
+    color: var(--text);
+    background-color: color-mix(in srgb, ${props => props.$color} 15%, var(--panel));
+    border: 1px solid color-mix(in srgb, ${props => props.$color} 45%, transparent);
+`;
+
+// 使用率バー
+const UsageBarTrack = styled.div`
+    height: 10px;
+    border-radius: 5px;
+    overflow: hidden;
+    background: var(--panel-alt);
+    border: 1px solid var(--panel-border);
+    margin-top: 8px;
+`;
+
+const UsageBarFill = styled.div`
+    height: 100%;
+    background: ${props => props.$color};
+    width: ${props => Math.min(props.$ratio * 100, 100)}%; /* 100% 超は満杯止まりにする */
+`;
+
+// R2使用量の status ("within_free" / "near_limit" / "over_free") に対する
+// 日本語ラベルと色トークンの対応。バックエンドは表示文言を持たないため、ここで対応付ける。
+const R2_USAGE_STATUS_LABELS = {
+    within_free: { label: '無料枠内', color: 'var(--ok)' },
+    near_limit: { label: '無料枠に近い', color: 'var(--warn)' },
+    over_free: { label: '従量課金が発生する見込み', color: 'var(--ng)' },
+};
+
+// R2 の請求単位に合わせて 10 進 GB（1GB = 10^9 バイト）で表示する。
+// 同ページ上部のアップロード容量表示は 1000*1024*1024 を使っているが、
+// あちらはアプリ独自の表示単位なので今回は変更しない（混同しないようここに注記する）。
+const formatR2Gb = (bytes) => `${(bytes / 1e9).toFixed(2)} GB`;
+
+// キャッシュ保持時間の表示。応答の cache_ttl_seconds をそのまま使う。
+// 注記に「5 分」とハードコードすると、R2_USAGE_CACHE_TTL_SECONDS を変えた時点で嘘になる。
+// 値が取れないときは空文字を返し、呼び出し側で「最大 ○○」ごと省略する。
+const formatCacheTtl = (seconds) => {
+    if (typeof seconds !== 'number' || !isFinite(seconds) || seconds <= 0) return '';
+    if (seconds < 60) return `${seconds} 秒`;
+    if (seconds % 60 === 0) return `${seconds / 60} 分`;
+    return `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`;
+};
 
 const AdminPage = () => {
     const router = useRouter();
@@ -187,6 +245,11 @@ const AdminPage = () => {
     const [error, setError] = useState('');
     const [isLoading, setIsLoading] = useState(true);
     const [updatingUser, setUpdatingUser] = useState(null); // 容量更新中のユーザー名
+    // R2ストレージ使用量。ページ全体の error(state) とは分離し、
+    // 集計失敗が他の管理機能（ユーザー管理等）を巻き込んでエラー扱いにしないようにする。
+    const [r2Usage, setR2Usage] = useState(null);
+    const [r2UsageError, setR2UsageError] = useState('');
+    const [isLoadingR2Usage, setIsLoadingR2Usage] = useState(false);
 
     useEffect(() => {
         if (token === null || isAdmin === undefined) {
@@ -279,6 +342,34 @@ const AdminPage = () => {
             }
         } catch (e) {
             setError('管理者データの取得中にエラーが発生しました。');
+        }
+
+        // R2使用量は独立したエラー state を持つため、ページ全体の error(state) には触れない。
+        // 動画一覧取得の失敗を致命扱いしていない上記と同じ方針。
+        fetchR2Usage(currentToken);
+    };
+
+    // R2ストレージ使用量を取得する。force=true で ?refresh=true を付け、
+    // バックエンドのキャッシュ（既定5分）を無視して再走査させる。
+    const fetchR2Usage = async (currentToken, { force = false } = {}) => {
+        if (!currentToken) return;
+        setIsLoadingR2Usage(true);
+        setR2UsageError('');
+        try {
+            const res = await fetch(`${BASE_URL}/admin/r2/usage${force ? '?refresh=true' : ''}`, {
+                headers: { 'Authorization': `Bearer ${currentToken}` }
+            });
+            if (res.ok) {
+                const data = await res.json();
+                setR2Usage(data);
+            } else {
+                const errorData = await res.json().catch(() => ({ detail: 'R2使用量の取得に失敗しました。' }));
+                setR2UsageError(errorData.detail || 'R2使用量の取得に失敗しました。');
+            }
+        } catch (e) {
+            setR2UsageError('R2使用量の取得中にエラーが発生しました。');
+        } finally {
+            setIsLoadingR2Usage(false);
         }
     };
 
@@ -509,7 +600,7 @@ const AdminPage = () => {
                                 <UserInfo>
                                     <div>
                                         <strong>ユーザー名:</strong> {user.username}
-                                        {isCurrentUser && <span style={{color: '#e74c3c', fontWeight: 'bold', marginLeft: '8px'}}>(あなた)</span>}
+                                        {isCurrentUser && <span style={{color: 'var(--ng)', fontWeight: 'bold', marginLeft: '8px'}}>(あなた)</span>}
                                     </div>
                                     <div>
                                         <strong>承認状態:</strong> <StatusText isApproved={user.is_approved}>{user.is_approved ? '承認済み' : '未承認'}</StatusText>
@@ -594,10 +685,13 @@ const AdminPage = () => {
                                 </UserInfo>
                                 <ButtonContainer>
                                     <RemoveButton onClick={() => handleDeleteVideo(video.id)}>削除</RemoveButton>
-                                    <a href={`${BASE_URL.replace('/api', '')}/share/${video.share_token}`} target="_blank" rel="noopener noreferrer" style={{
+                                    {/* Next.js の共有ページ /share/{token} を開く。
+                                        BASE_URL（本番では '/be'）を前置しないこと。
+                                        前置するとバックエンドの生HTMLページ /be/share/{token} に飛んでしまう。 */}
+                                    <a href={`/share/${video.share_token}`} target="_blank" rel="noopener noreferrer" style={{
                                         padding: '8px 15px',
-                                        backgroundColor: '#3498db',
-                                        color: 'white',
+                                        backgroundColor: 'var(--accent)',
+                                        color: 'var(--accent-contrast)',
                                         textDecoration: 'none',
                                         borderRadius: '5px',
                                         fontSize: '0.9em'
@@ -610,11 +704,93 @@ const AdminPage = () => {
             </UserSection>
 
             <UserSection>
+                <h2>R2ストレージ</h2>
+                {r2UsageError && <ErrorMessage>R2使用量エラー: {r2UsageError}</ErrorMessage>}
+                {!r2Usage && isLoadingR2Usage && <p>読み込み中...</p>}
+                {!r2Usage && !isLoadingR2Usage && !r2UsageError && <p>R2使用量を取得できませんでした。</p>}
+                {r2Usage && (
+                    <div>
+                        <UserGrid>
+                            <UserCard>
+                                <UserInfo>
+                                    <div><strong>合計使用量:</strong> {formatR2Gb(r2Usage.total_bytes)}</div>
+                                    <div><strong>オブジェクト数:</strong> {r2Usage.object_count} 件</div>
+                                    <div>
+                                        <strong>無料枠:</strong>{' '}
+                                        {r2Usage.free_tier_bytes ? formatR2Gb(r2Usage.free_tier_bytes) : '-'}
+                                        {'　'}
+                                        <strong>使用率:</strong>{' '}
+                                        {typeof r2Usage.usage_ratio === 'number' ? `${(r2Usage.usage_ratio * 100).toFixed(1)}%` : '-'}
+                                    </div>
+                                    <UsageBarTrack>
+                                        <UsageBarFill
+                                            $ratio={typeof r2Usage.usage_ratio === 'number' ? r2Usage.usage_ratio : 0}
+                                            $color={(R2_USAGE_STATUS_LABELS[r2Usage.status] || {}).color || 'var(--accent)'}
+                                        />
+                                    </UsageBarTrack>
+                                    <div>
+                                        <strong>判定:</strong>{' '}
+                                        <StatusBadge $color={(R2_USAGE_STATUS_LABELS[r2Usage.status] || {}).color || 'var(--inconclusive)'}>
+                                            {(R2_USAGE_STATUS_LABELS[r2Usage.status] || {}).label || r2Usage.status}
+                                        </StatusBadge>
+                                    </div>
+                                    {r2Usage.status === 'over_free' && (
+                                        <div>
+                                            <strong>概算超過額:</strong> ${r2Usage.estimated_monthly_cost_usd.toFixed(2)} / 月
+                                            （${r2Usage.price_per_gb_month_usd} / GB-month）
+                                        </div>
+                                    )}
+                                </UserInfo>
+                            </UserCard>
+
+                            {(r2Usage.prefixes || []).map(p => (
+                                <UserCard key={p.prefix}>
+                                    <UserInfo>
+                                        <div><strong>{p.prefix}</strong></div>
+                                        <div>{formatR2Gb(p.bytes)}</div>
+                                        <div>{p.count} 件</div>
+                                    </UserInfo>
+                                </UserCard>
+                            ))}
+                        </UserGrid>
+
+                        <p style={{ color: 'var(--muted)', fontSize: '0.9em', marginTop: '15px' }}>
+                            集計時刻: {new Date(r2Usage.collected_at).toLocaleString('ja-JP')}
+                            {r2Usage.cached ? '（キャッシュされた結果）' : '（今回取得）'}
+                        </p>
+
+                        <ButtonContainer>
+                            <BaseButton
+                                style={{ backgroundColor: 'var(--accent)', color: 'var(--accent-contrast)' }}
+                                onClick={() => fetchR2Usage(token, { force: true })}
+                                disabled={isLoadingR2Usage}
+                            >
+                                {isLoadingR2Usage ? '再取得中...' : '再取得'}
+                            </BaseButton>
+                        </ButtonContainer>
+
+                        <ul style={{ color: 'var(--muted)', fontSize: '0.85em', marginTop: '15px', paddingLeft: '20px' }}>
+                            <li>実際の課金は日次ピーク値を30日で平均した GB-month で計算されるため、ここに出る値は概算です。</li>
+                            <li>課金対象はデータ本体とメタデータの合計ですが、ここではデータ本体のみを集計しています。</li>
+                            {/* キャッシュ秒数は応答の cache_ttl_seconds から出す。
+                                ハードコードすると R2_USAGE_CACHE_TTL_SECONDS を変えた時点で注記が嘘になる。 */}
+                            <li>
+                                {(() => {
+                                    const ttl = formatCacheTtl(r2Usage.cache_ttl_seconds);
+                                    return `一覧取得は Cloudflare の Class A オペレーションを消費するため、結果を${ttl ? `最大 ${ttl}` : ''}キャッシュします。`;
+                                })()}
+                            </li>
+                        </ul>
+                    </div>
+                )}
+            </UserSection>
+
+            <UserSection>
                 <h2>未共有ファイルのクリーンアップ</h2>
                 <p>共有リンクが作成されず、作成から3時間以上経過した圧縮ファイルを検索・削除します。</p>
                 <ButtonContainer style={{ marginBottom: "20px" }}>
-                    <BaseButton 
-                        style={{ backgroundColor: "#3498db", color: "white" }} 
+                    <BaseButton
+                        style={{ backgroundColor: "var(--accent)", color: "var(--accent-contrast)" }}
                         onClick={handleScanCleanup}
                         disabled={isScanning || isCleaning}
                     >
@@ -633,11 +809,11 @@ const AdminPage = () => {
                 {cleanupFiles.length > 0 && (
                     <div>
                         <h3>検出されたファイル ({cleanupFiles.length}件)</h3>
-                        <ul style={{ maxHeight: "300px", overflowY: "auto", border: "1px solid #ddd", padding: "10px", borderRadius: "5px" }}>
+                        <ul style={{ maxHeight: "300px", overflowY: "auto", border: "1px solid var(--panel-border)", padding: "10px", borderRadius: "5px" }}>
                             {cleanupFiles.map((file, index) => (
                                 <li key={index} style={{ marginBottom: "5px", fontSize: "0.9em" }}>
                                     <strong>{file.key}</strong> <br/>
-                                    <span style={{ color: "#666" }}>
+                                    <span style={{ color: "var(--muted)" }}>
                                         サイズ: {(file.size / 1024 / 1024).toFixed(2)} MB, 
                                         更新日: {new Date(file.last_modified).toLocaleString()}
                                     </span>

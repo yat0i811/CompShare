@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import useAuth from '../hooks/useAuth';
 import { useRouter } from 'next/router';
+import { BASE_URL } from '../utils/constants';
 
 const ManagePage = () => {
     const [videos, setVideos] = useState([]);
@@ -27,7 +28,7 @@ const ManagePage = () => {
 
     const fetchVideos = async () => {
         try {
-            const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8001'}/manage/videos`, {
+            const response = await fetch(`${BASE_URL}/manage/videos`, {
                 headers: {
                     'Authorization': `Bearer ${token}`
                 }
@@ -48,7 +49,7 @@ const ManagePage = () => {
 
     const fetchStats = async () => {
         try {
-            const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8001'}/manage/stats`, {
+            const response = await fetch(`${BASE_URL}/manage/stats`, {
                 headers: {
                     'Authorization': `Bearer ${token}`
                 }
@@ -69,7 +70,7 @@ const ManagePage = () => {
 
     const handleDownload = async (video) => {
         try {
-            const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8001'}/get-download-url/${video.compressed_filename}`, {
+            const response = await fetch(`${BASE_URL}/get-download-url/${video.compressed_filename}`, {
                 headers: {
                     'Authorization': `Bearer ${token}`
                 }
@@ -94,7 +95,7 @@ const ManagePage = () => {
         setDeletingVideo(video.share_token);
         
         try {
-            const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8001'}/manage/delete/${video.share_token}`, {
+            const response = await fetch(`${BASE_URL}/manage/delete/${video.share_token}`, {
                 method: 'DELETE',
                 headers: {
                     'Authorization': `Bearer ${token}`
@@ -124,7 +125,7 @@ const ManagePage = () => {
         setUpdatingExpiry(true);
         
         try {
-            const response = await fetch(`${process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:8001'}/manage/update-expiry/${selectedVideo.share_token}?new_expiry_days=${newExpiryDays}`, {
+            const response = await fetch(`${BASE_URL}/manage/update-expiry/${selectedVideo.share_token}?new_expiry_days=${newExpiryDays}`, {
                 method: 'PUT',
                 headers: {
                     'Authorization': `Bearer ${token}`
@@ -292,7 +293,7 @@ const ManagePage = () => {
                 .manage-page h1 {
                     text-align: center;
                     margin-bottom: 30px;
-                    color: #333;
+                    color: var(--text);
                 }
 
                 .stats-container {
@@ -303,17 +304,17 @@ const ManagePage = () => {
                 }
 
                 .stat-card {
-                    background: #f8f9fa;
+                    background: var(--panel-alt);
                     padding: 20px;
                     border-radius: 8px;
                     text-align: center;
                     min-width: 150px;
-                    border: 1px solid #e9ecef;
+                    border: 1px solid var(--panel-border);
                 }
 
                 .stat-card h3 {
                     margin: 0 0 10px 0;
-                    color: #666;
+                    color: var(--muted);
                     font-size: 14px;
                 }
 
@@ -321,13 +322,13 @@ const ManagePage = () => {
                     margin: 0;
                     font-size: 24px;
                     font-weight: bold;
-                    color: #333;
+                    color: var(--text);
                 }
 
                 .no-videos {
                     text-align: center;
                     padding: 60px 20px;
-                    color: #666;
+                    color: var(--muted);
                 }
 
                 .videos-grid {
@@ -337,16 +338,16 @@ const ManagePage = () => {
                 }
 
                 .video-card {
-                    background: white;
-                    border: 1px solid #e9ecef;
+                    background: var(--panel);
+                    border: 1px solid var(--panel-border);
                     border-radius: 8px;
                     padding: 20px;
-                    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                    box-shadow: var(--shadow);
                 }
 
                 .video-card.expired {
                     opacity: 0.7;
-                    background: #f8f9fa;
+                    background: var(--panel-alt);
                 }
 
                 .video-header {
@@ -359,13 +360,13 @@ const ManagePage = () => {
                 .video-header h3 {
                     margin: 0;
                     font-size: 16px;
-                    color: #333;
+                    color: var(--text);
                     word-break: break-all;
                 }
 
                 .expired-badge {
-                    background: #dc3545;
-                    color: white;
+                    background: var(--ng);
+                    color: var(--accent-contrast);
                     padding: 4px 8px;
                     border-radius: 4px;
                     font-size: 12px;
@@ -379,11 +380,11 @@ const ManagePage = () => {
                 .video-info p {
                     margin: 5px 0;
                     font-size: 14px;
-                    color: #666;
+                    color: var(--muted);
                 }
 
                 .video-info strong {
-                    color: #333;
+                    color: var(--text);
                 }
 
                 .video-actions {
@@ -407,39 +408,39 @@ const ManagePage = () => {
                 }
 
                 .btn-preview {
-                    background: #007bff;
-                    color: white;
+                    background: var(--accent);
+                    color: var(--accent-contrast);
                 }
 
                 .btn-preview:hover:not(:disabled) {
-                    background: #0056b3;
+                    background: var(--accent-hover);
                 }
 
                 .btn-download {
-                    background: #28a745;
-                    color: white;
+                    background: var(--ok);
+                    color: var(--accent-contrast);
                 }
 
                 .btn-download:hover:not(:disabled) {
-                    background: #1e7e34;
+                    filter: brightness(0.88);
                 }
 
                 .btn-expiry {
-                    background: #ffc107;
-                    color: #212529;
+                    background: var(--warn);
+                    color: var(--warn-contrast);
                 }
 
                 .btn-expiry:hover:not(:disabled) {
-                    background: #e0a800;
+                    filter: brightness(0.88);
                 }
 
                 .btn-delete {
-                    background: #dc3545;
-                    color: white;
+                    background: var(--ng);
+                    color: var(--accent-contrast);
                 }
 
                 .btn-delete:hover:not(:disabled) {
-                    background: #c82333;
+                    filter: brightness(0.88);
                 }
 
                 .modal-overlay {
@@ -448,7 +449,7 @@ const ManagePage = () => {
                     left: 0;
                     right: 0;
                     bottom: 0;
-                    background: rgba(0,0,0,0.5);
+                    background: var(--overlay);
                     display: flex;
                     align-items: center;
                     justify-content: center;
@@ -456,7 +457,7 @@ const ManagePage = () => {
                 }
 
                 .modal {
-                    background: white;
+                    background: var(--panel);
                     padding: 30px;
                     border-radius: 8px;
                     max-width: 500px;
@@ -465,7 +466,7 @@ const ManagePage = () => {
 
                 .modal h3 {
                     margin: 0 0 20px 0;
-                    color: #333;
+                    color: var(--text);
                 }
 
                 .form-group {
@@ -475,16 +476,18 @@ const ManagePage = () => {
                 .form-group label {
                     display: block;
                     margin-bottom: 5px;
-                    color: #333;
+                    color: var(--text);
                     font-weight: bold;
                 }
 
                 .form-input {
                     width: 100%;
                     padding: 10px;
-                    border: 1px solid #ddd;
+                    border: 1px solid var(--input-border);
                     border-radius: 4px;
                     font-size: 16px;
+                    background: var(--input-bg);
+                    color: var(--text);
                 }
 
                 .modal-actions {
@@ -494,31 +497,32 @@ const ManagePage = () => {
                 }
 
                 .btn-secondary {
-                    background: #6c757d;
-                    color: white;
+                    background: var(--inconclusive);
+                    color: var(--accent-contrast);
                 }
 
                 .btn-secondary:hover:not(:disabled) {
-                    background: #545b62;
+                    filter: brightness(0.88);
                 }
 
                 .btn-primary {
-                    background: #007bff;
-                    color: white;
+                    background: var(--accent);
+                    color: var(--accent-contrast);
                 }
 
                 .btn-primary:hover:not(:disabled) {
-                    background: #0056b3;
+                    background: var(--accent-hover);
                 }
 
                 .loading, .error {
                     text-align: center;
                     padding: 60px 20px;
                     font-size: 18px;
+                    color: var(--text);
                 }
 
                 .error {
-                    color: #dc3545;
+                    color: var(--ng);
                 }
 
                 @media (max-width: 768px) {

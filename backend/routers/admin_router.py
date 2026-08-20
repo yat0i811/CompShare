@@ -1,10 +1,13 @@
-from fastapi import APIRouter, Depends, HTTPException, Path, Body, Request
-from typing import List, Dict, Any
-from datetime import datetime, timezone
+from fastapi import APIRouter, Depends, HTTPException, Path, Body, Request, Query
+from typing import List, Dict, Any, Optional
+from datetime import datetime, timezone, timedelta
 import aiosqlite
+import asyncio
+import time
 
 from db import crud
 from core.config import settings
+from core import r2_transfer
 from .auth_router import get_current_admin_user_from_dependency
 from utils.security import log_security_event, log_security_violation, get_client_ip
 
@@ -192,8 +195,9 @@ async def delete_video(request: Request, video_id: int = Path(...), current_admi
         raise HTTPException(status_code=500, detail="ストレージサービスが利用できません")
 
     try:
-        r2_client.delete_object(Bucket=settings.R2_BUCKET_NAME, Key=video["r2_key"])
-        
+        # R2呼び出しは専用エグゼキュータで実行する（既定エグゼキュータの枠を消費しない）
+        await r2_transfer.run_r2(r2_client.delete_object, Bucket=settings.R2_BUCKET_NAME, Key=video["r2_key"])
+
         # 圧縮前ファイルがあれば削除を試みるが、キーの命名規則に依存するため、
         # 現状は r2_key (圧縮後ファイル) のみを削除対象とする。
         # 必要であれば original_filename や video_router のロジックを参照して削除する。
@@ -240,30 +244,39 @@ async def scan_unshared_videos(request: Request, current_admin_user: dict = Depe
     now = datetime.now(timezone.utc)
 
     try:
-        # R2のcompressed/ディレクトリ内のファイル一覧を取得
-        paginator = r2_client.get_paginator('list_objects_v2')
-        
         # 全ての共有済み動画のr2_keyをセットで取得（パフォーマンス向上のため）
+        # aiosqliteの呼び出しはイベントループ上で完結させ、R2の走査だけをスレッドへ逃がす
         async with aiosqlite.connect(settings.DB_PATH) as db:
             cursor = await db.execute("SELECT r2_key FROM shared_videos")
             shared_keys = {row[0] for row in await cursor.fetchall()}
 
-        for page in paginator.paginate(Bucket=settings.R2_BUCKET_NAME, Prefix="compressed/"):
-            for obj in page.get('Contents', []):
-                key = obj['Key']
-                last_modified = obj['LastModified']
-                
-                # 3時間未満の場合はスキップ
-                if (now - last_modified).total_seconds() < 10800:
-                    continue
-                
-                # DBに存在しない場合のみリストアップ
-                if key not in shared_keys:
-                    found_files.append({
-                        "key": key,
-                        "size": obj['Size'],
-                        "last_modified": last_modified.isoformat()
-                    })
+        # botocoreのpaginatorは遅延評価で、1ページ進むごとに同期のネットワーク呼び出しを行う。
+        # async関数内でそのまま回すとオブジェクト数に比例してイベントループが止まるため、
+        # 走査ループ全体をひとつの同期関数にまとめてスレッドプールで実行する。
+        def _scan_unshared_objects():
+            files = []
+            # R2のcompressed/ディレクトリ内のファイル一覧を取得
+            paginator = r2_client.get_paginator('list_objects_v2')
+            for page in paginator.paginate(Bucket=settings.R2_BUCKET_NAME, Prefix="compressed/"):
+                for obj in page.get('Contents', []):
+                    key = obj['Key']
+                    last_modified = obj['LastModified']
+
+                    # 3時間未満の場合はスキップ
+                    if (now - last_modified).total_seconds() < 10800:
+                        continue
+
+                    # DBに存在しない場合のみリストアップ
+                    if key not in shared_keys:
+                        files.append({
+                            "key": key,
+                            "size": obj['Size'],
+                            "last_modified": last_modified.isoformat()
+                        })
+            return files
+
+        # R2呼び出しは専用エグゼキュータで実行する（既定エグゼキュータの枠を消費しない）
+        found_files = await r2_transfer.run_r2(_scan_unshared_objects)
     except Exception as e:
         log_security_violation(
             request=request,
@@ -292,27 +305,36 @@ async def cleanup_unshared_videos_execute(request: Request, current_admin_user: 
     now = datetime.now(timezone.utc)
     
     try:
-        # スキャンと同様のロジックで対象を特定して削除
-        paginator = r2_client.get_paginator('list_objects_v2')
-        
+        # aiosqliteの呼び出しはイベントループ上で完結させ、R2の走査・削除だけをスレッドへ逃がす
         async with aiosqlite.connect(settings.DB_PATH) as db:
             cursor = await db.execute("SELECT r2_key FROM shared_videos")
             shared_keys = {row[0] for row in await cursor.fetchall()}
 
-        for page in paginator.paginate(Bucket=settings.R2_BUCKET_NAME, Prefix="compressed/"):
-            for obj in page.get('Contents', []):
-                key = obj['Key']
-                last_modified = obj['LastModified']
-                
-                if (now - last_modified).total_seconds() < 10800:
-                    continue
-                
-                if key not in shared_keys:
-                    try:
-                        r2_client.delete_object(Bucket=settings.R2_BUCKET_NAME, Key=key)
-                        deleted_files.append(key)
-                    except Exception as e:
-                        errors.append(f"{key}: {str(e)}")
+        # スキャンと同様のロジックで対象を特定して削除。
+        # paginatorもdelete_objectも同期I/Oのため、ループ全体をひとつの同期関数に
+        # まとめてスレッドプールで実行する（1件ずつto_threadを挟むより往復が少なく確実）。
+        def _delete_unshared_objects():
+            deleted = []
+            failed = []
+            paginator = r2_client.get_paginator('list_objects_v2')
+            for page in paginator.paginate(Bucket=settings.R2_BUCKET_NAME, Prefix="compressed/"):
+                for obj in page.get('Contents', []):
+                    key = obj['Key']
+                    last_modified = obj['LastModified']
+
+                    if (now - last_modified).total_seconds() < 10800:
+                        continue
+
+                    if key not in shared_keys:
+                        try:
+                            r2_client.delete_object(Bucket=settings.R2_BUCKET_NAME, Key=key)
+                            deleted.append(key)
+                        except Exception as e:
+                            failed.append(f"{key}: {str(e)}")
+            return deleted, failed
+
+        # R2呼び出しは専用エグゼキュータで実行する（既定エグゼキュータの枠を消費しない）
+        deleted_files, errors = await r2_transfer.run_r2(_delete_unshared_objects)
 
     except Exception as e:
          raise HTTPException(status_code=500, detail=f"クリーンアップ実行中にエラーが発生しました: {e}")
@@ -328,4 +350,145 @@ async def cleanup_unshared_videos_execute(request: Request, current_admin_user: 
         "message": f"{len(deleted_files)} 個のファイルを削除しました",
         "deleted_files": deleted_files,
         "errors": errors
+    }
+
+# --- R2ストレージ使用量の集計・キャッシュ ---
+# モジュール変数。uvicornは--workers指定が無く1プロセスなのでこれで十分。
+# 将来ワーカーを増やす場合はワーカーごとに1回走査される点に注意。
+_r2_usage_cache: Optional[Dict[str, Any]] = None
+_r2_usage_cached_at: float = 0.0            # time.monotonic()
+_r2_usage_lock = asyncio.Lock()             # 同時アクセス時の二重走査を防ぐ
+
+
+def _classify_r2_key(key: str) -> str:
+    """R2キーのプレフィックスから内訳カテゴリを判定する。"""
+    if key.startswith("compressed/"):
+        return "compressed/"
+    if key.startswith("uploads/"):
+        return "uploads/"
+    return "other"
+
+
+def _scan_bucket_usage() -> tuple[int, int, Dict[str, Dict[str, int]]]:
+    """バケット全体をListObjectsV2で走査し、合計とプレフィックス別内訳を求める同期関数。
+
+    botocoreのpaginatorは遅延評価で、1ページ進むごとに同期のネットワーク呼び出しを行う。
+    async関数内でそのまま回すとオブジェクト数に比例してイベントループが止まるため、
+    scan_unshared_videos(本ファイル)と同じ形で走査ループ全体をこの同期関数に閉じ込め、
+    r2_transfer.run_r2(R2専用エグゼキュータ)で1回だけ実行する。
+    """
+    total_bytes = 0
+    object_count = 0
+    per_prefix: Dict[str, Dict[str, int]] = {
+        "compressed/": {"bytes": 0, "count": 0},
+        "uploads/": {"bytes": 0, "count": 0},
+        "other": {"bytes": 0, "count": 0},
+    }
+    paginator = r2_client.get_paginator('list_objects_v2')
+    # Prefix指定なし＝バケット全件を対象にする
+    for page in paginator.paginate(Bucket=settings.R2_BUCKET_NAME):
+        for obj in page.get('Contents', []):
+            # obj['Size']はpayloadのみ（メタデータを含まない）＝概算である旨をUI側に注記する
+            size = obj['Size']
+            category = _classify_r2_key(obj['Key'])
+            total_bytes += size
+            object_count += 1
+            per_prefix[category]["bytes"] += size
+            per_prefix[category]["count"] += 1
+    return total_bytes, object_count, per_prefix
+
+
+async def _get_r2_usage(refresh: bool) -> tuple[Dict[str, Any], bool]:
+    """R2使用量をキャッシュ付きで取得する。戻り値は (集計結果dict, cachedかどうか)。
+
+    ListObjectsV2は1000件ごとにClass Aオペレーションを1回消費するため、
+    管理者ページを開くたびに全走査しない。
+    """
+    global _r2_usage_cache, _r2_usage_cached_at
+
+    if not refresh and _r2_usage_cache is not None and \
+            (time.monotonic() - _r2_usage_cached_at) < settings.R2_USAGE_CACHE_TTL_SECONDS:
+        return _r2_usage_cache, True
+
+    async with _r2_usage_lock:
+        # ロック待ちの間に他方が更新済みの可能性があるので再チェックする（二重走査防止）
+        if not refresh and _r2_usage_cache is not None and \
+                (time.monotonic() - _r2_usage_cached_at) < settings.R2_USAGE_CACHE_TTL_SECONDS:
+            return _r2_usage_cache, True
+
+        # R2呼び出しは専用エグゼキュータで実行する（既定エグゼキュータの枠を消費しない）
+        total_bytes, object_count, per_prefix = await r2_transfer.run_r2(_scan_bucket_usage)
+
+        jst = timezone(timedelta(hours=9))
+        _r2_usage_cache = {
+            "total_bytes": total_bytes,
+            "object_count": object_count,
+            "prefixes": [
+                {"prefix": prefix, "bytes": data["bytes"], "count": data["count"]}
+                for prefix, data in per_prefix.items()
+            ],
+            "collected_at": datetime.now(jst).isoformat(),
+        }
+        _r2_usage_cached_at = time.monotonic()
+        return _r2_usage_cache, False
+
+
+@router.get("/r2/usage", summary="R2ストレージ使用量取得 (管理者用)")
+async def get_r2_usage(
+    request: Request,
+    refresh: bool = Query(False),
+    current_admin_user: dict = Depends(get_current_admin_user_from_dependency)
+):
+    if not r2_client:
+        raise HTTPException(status_code=500, detail="ストレージサービスが利用できません")
+
+    try:
+        usage, cached = await _get_r2_usage(refresh)
+    except Exception as e:
+        log_security_violation(
+            request=request,
+            user=current_admin_user["sub"],
+            violation_type="R2_USAGE_SCAN_ERROR",
+            details=f"Error scanning R2 usage: {e}"
+        )
+        raise HTTPException(status_code=500, detail=f"使用量の集計中にエラーが発生しました: {e}")
+
+    total_bytes = usage["total_bytes"]
+    # GBは10進（1GB = 10^9バイト）。Cloudflareの請求単位に合わせるため。
+    free_tier_bytes = int(settings.R2_FREE_STORAGE_GB * 1_000_000_000)
+    usage_ratio = (total_bytes / free_tier_bytes) if free_tier_bytes > 0 else None
+
+    if usage_ratio is None:
+        # free_tier_bytesが0以下（設定ミス）の場合、無料枠が無いものとして扱う
+        status = "over_free"
+    elif usage_ratio < 0.8:
+        status = "within_free"
+    elif usage_ratio <= 1.0:
+        status = "near_limit"
+    else:
+        status = "over_free"
+
+    billable_bytes = max(0, total_bytes - free_tier_bytes)
+    estimated_monthly_cost_usd = round(billable_bytes / 1e9 * settings.R2_STORAGE_PRICE_PER_GB_MONTH, 4)
+
+    log_security_event(
+        event_type="ADMIN_VIEWED_R2_USAGE",
+        user=current_admin_user["sub"],
+        ip_address=get_client_ip(request),
+        details=f"cached={cached}, total_bytes={total_bytes}, objects={usage['object_count']}"
+    )
+
+    return {
+        "total_bytes": total_bytes,
+        "object_count": usage["object_count"],
+        "prefixes": usage["prefixes"],
+        "free_tier_bytes": free_tier_bytes,
+        "usage_ratio": usage_ratio,
+        "status": status,
+        "billable_bytes": billable_bytes,
+        "estimated_monthly_cost_usd": estimated_monthly_cost_usd,
+        "price_per_gb_month_usd": settings.R2_STORAGE_PRICE_PER_GB_MONTH,
+        "collected_at": usage["collected_at"],
+        "cached": cached,
+        "cache_ttl_seconds": settings.R2_USAGE_CACHE_TTL_SECONDS,
     }

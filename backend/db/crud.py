@@ -1,4 +1,5 @@
 import aiosqlite
+import asyncio
 from core.config import settings
 from passlib.hash import bcrypt
 from fastapi import HTTPException
@@ -24,7 +25,10 @@ async def get_user_by_username(username: str):
         return dict(user) if user else None
 
 async def create_user(user: UserCreate):
-    hashed_password = bcrypt.hash(user.password)
+    # bcrypt(cost 12)は1回あたり約200-400msをGILを保持したまま消費する同期処理。
+    # create_userは既にasync関数で呼び出し元も1箇所（auth_router.register_user）のみのため、
+    # 関数シグネチャを変えずここで直接スレッドプールに逃がすのが影響最小。
+    hashed_password = await asyncio.to_thread(bcrypt.hash, user.password)
     async with aiosqlite.connect(settings.DB_PATH) as db:
         cursor = await db.execute("SELECT 1 FROM users WHERE username = ?", (user.username,))
         exists = await cursor.fetchone()

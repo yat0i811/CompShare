@@ -3,6 +3,7 @@ from fastapi.responses import JSONResponse
 from jose import jwt, JWTError
 from datetime import datetime, timedelta, timezone
 from passlib.hash import bcrypt
+import asyncio
 
 from core.config import settings
 from db import crud
@@ -114,7 +115,16 @@ async def login_for_access_token(request: Request, username: str = Form(...), pa
         raise HTTPException(status_code=400, detail="パスワードを入力してください")
     
     user = await crud.get_user_by_username(username)
-    if not user or not user.get("hashed_password") or not bcrypt.verify(password, user["hashed_password"]):
+
+    # bcrypt(cost 12)は1回あたり約200-400msをGILを保持したまま消費する同期処理。
+    # このエンドポイントはレート制限の対象外のため、未認証のリクエスト連打だけで
+    # イベントループを塞げてしまう。スレッドプールに逃がす。
+    # （元の一行条件は短絡評価に依存していたため、awaitできるよう分解した）
+    password_valid = False
+    if user and user.get("hashed_password"):
+        password_valid = await asyncio.to_thread(bcrypt.verify, password, user["hashed_password"])
+
+    if not password_valid:
         log_authentication_event(
             request=request,
             username=username,
@@ -165,5 +175,7 @@ async def read_users_me(request: Request, current_user: dict = Depends(get_curre
     return {
         "username": user_from_db["username"],
         "is_admin": user_from_db["is_admin"],
-        "upload_capacity_bytes": user_from_db.get("upload_capacity_bytes", 104857600) # Default to 100MB if not set
+        # dict.get(key, default) はキーが存在して値がNULL(None)のときdefaultを返さないため、
+        # NULL行でnullを返してしまわないよう or でフォールバックする
+        "upload_capacity_bytes": (user_from_db.get("upload_capacity_bytes") or 104857600) # Default to 100MB if not set
     } 
